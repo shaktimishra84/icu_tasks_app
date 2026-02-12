@@ -65,9 +65,25 @@ streamlit run app.py
 1. Push this project to a private GitHub repo.
 2. Deploy it on Streamlit Community Cloud from that repo.
 3. In Streamlit app settings, add secrets:
-   - `ALLOWED_USERS` as a comma-separated list of the 4 emails.
-   - Auth provider credentials required by `st.login()` (see `.streamlit/secrets.toml.example`).
+   - Use the exact template in `.streamlit/secrets.toml.example`.
+   - `ALLOWED_USERS` currently prefilled for:
+     - `samir.jj.ax@gmail.com`
+     - `dash.abhilash2012@gmail.com`
+     - `drsatyajit87@gmail.com`
+     - `shaktimishra84@gmail.com`
+   - Fill `[auth]` values from your Google OIDC app.
 4. Share the Streamlit app URL with those 4 users only.
+
+### Streamlit Cloud Click Path
+
+1. Go to [share.streamlit.io](https://share.streamlit.io/) and sign in.
+2. Click **New app**.
+3. Select repo: `shaktimishra84/icu_tasks_app`, branch: `main`, main file: `app.py`.
+4. Open **Advanced settings** and paste secrets from `.streamlit/secrets.toml.example` (with real `[auth]` values).
+5. Click **Deploy**.
+6. Open the deployed URL and verify:
+   - non-listed email -> denied
+   - listed email -> app loads
 
 Notes:
 - Do not commit `.env` (already in `.gitignore`).
