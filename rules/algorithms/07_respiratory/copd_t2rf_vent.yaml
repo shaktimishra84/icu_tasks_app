@@ -1,0 +1,42 @@
+name: COPD_T2RF_Vent
+system_tag: 07_respiratory
+diagnosis_keywords:
+  - copd
+  - ae copd
+  - t2rf
+  - type 2 respiratory failure
+  - hypercapnic respiratory failure
+supports_keywords:
+  - mv
+  - ventilator
+  - niv
+  - bipap
+lab_keywords:
+  - abg
+  - pco2
+required_tests:
+  - name: ABG trend
+    priority: High
+    evidence_keywords:
+      - abg
+      - blood gas
+      - pco2
+required_imaging:
+  - name: CXR follow-up if planned
+    priority: Medium
+    evidence_keywords:
+      - cxr
+      - chest x-ray
+required_consults: []
+required_care_checks:
+  - name: Ventilator review
+    priority: High
+    evidence_keywords:
+      - vent settings
+      - ventilator settings
+      - vent review
+  - name: NIV/MV weaning check
+    priority: Medium
+    evidence_keywords:
+      - weaning
+      - extubation readiness

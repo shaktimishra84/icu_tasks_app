@@ -1,0 +1,59 @@
+name: PulmonaryEmbolism
+system_tag: 06_cardiovascular
+diagnosis_keywords:
+  - pulmonary embolism
+  - pulm. embolism
+  - pulm embolism
+  - pe
+strict_diagnosis_keywords:
+  - pulmonary embolism
+  - pulm. embolism
+  - pulm embolism
+  - pe
+supports_keywords: []
+lab_keywords:
+  - ctpa
+  - d-dimer
+required_tests:
+  - name: Anticoagulation plan
+    priority: High
+    evidence_keywords:
+      - anticoag
+      - heparin
+      - lmwh
+      - apixaban
+      - rivaroxaban
+required_imaging:
+  - name: CTPA report follow-up
+    priority: High
+    evidence_keywords:
+      - ctpa
+      - ctpa report
+  - name: Echocardiography if RV strain suspected
+    priority: Medium
+    trigger_keywords:
+      - rv strain
+      - shock
+    evidence_keywords:
+      - 2d echo
+      - echocardiography
+required_consults:
+  - name: Cardiology consult
+    priority: Medium
+    trigger_keywords:
+      - rv strain
+      - shock
+    evidence_keywords:
+      - cardiology
+      - cardio consult
+      - cardiology call
+  - name: Ortho/PAC consult if trauma
+    priority: Medium
+    trigger_keywords:
+      - trauma
+      - fracture
+    evidence_keywords:
+      - ortho
+      - pac
+      - ortho call
+      - pac call

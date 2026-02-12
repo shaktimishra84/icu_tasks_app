@@ -1,0 +1,8 @@
+.env
+__pycache__/
+.pytest_cache/
+*.pyc
+data/resources.json
+data/resources_index.json
+output/
+tmp_*.docx

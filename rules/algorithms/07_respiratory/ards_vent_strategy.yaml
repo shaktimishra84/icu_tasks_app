@@ -1,0 +1,47 @@
+name: ARDS_VentStrategy
+system_tag: 07_respiratory
+diagnosis_keywords:
+  - ards
+  - respiratory failure
+  - hypoxemic failure
+supports_keywords:
+  - mv
+  - ventilator
+  - mechanical ventilation
+lab_keywords:
+  - abg
+  - pao2
+  - fio2
+required_tests:
+  - name: ABG trend
+    priority: High
+    evidence_keywords:
+      - abg
+      - blood gas
+required_imaging:
+  - name: CXR/HRCT follow-up if planned
+    priority: Medium
+    trigger_keywords:
+      - ards
+      - respiratory failure
+    evidence_keywords:
+      - cxr
+      - chest x-ray
+      - hrct
+required_consults: []
+required_care_checks:
+  - name: Ventilator review
+    priority: High
+    evidence_keywords:
+      - vent settings
+      - ventilator settings
+      - vent review
+  - name: VAP bundle check
+    priority: High
+    evidence_keywords:
+      - vap bundle
+  - name: Weaning/extubation readiness
+    priority: Medium
+    evidence_keywords:
+      - weaning
+      - extubation readiness

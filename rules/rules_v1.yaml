@@ -1,0 +1,274 @@
+system_detection:
+  01_neuro:
+    diagnosis_keywords:
+      - cva
+      - stroke
+      - infarct
+      - ich
+      - sah
+      - encephalopathy
+      - seizure
+      - meningitis
+  02_renal:
+    diagnosis_keywords:
+      - aki
+      - acute kidney injury
+      - ckd
+      - chronic kidney disease
+      - uremia
+  03_gi_hepatic:
+    diagnosis_keywords:
+      - ugib
+      - ugi bleed
+      - variceal
+      - hematemesis
+      - melena
+      - hepatic
+  07_respiratory:
+    diagnosis_keywords:
+      - ards
+      - respiratory failure
+      - ventilator
+      - mv
+      - pneumonia
+      - copd
+      - ae copd
+      - t2rf
+      - type 2 respiratory failure
+  06_cardiovascular:
+    diagnosis_keywords:
+      - pulm. embolism
+      - pulm embolism
+      - pulmonary embolism
+      - pe
+      - nstemi
+      - stemi
+  10_infectious:
+    diagnosis_keywords:
+      - sepsis
+      - septic shock
+      - septic
+      - infection
+      - fever
+      - meningitis
+      - pneumonia
+
+triggers:
+  ventilated_critical:
+    diagnosis_keywords: []
+    supports_keywords:
+      - ventilator
+      - mv
+      - mechanical ventilation
+    status_keywords: []
+
+  septic_shock_norad:
+    diagnosis_keywords:
+      - septic shock
+      - sepsis
+      - septic
+      - shock
+    supports_keywords:
+      - norad
+      - norepinephrine
+      - vasopressor
+    status_keywords: []
+
+  aki_ckd:
+    diagnosis_keywords:
+      - aki
+      - acute kidney injury
+      - ckd
+      - chronic kidney disease
+      - uremia
+    creatinine_threshold: 2.0
+    supports_keywords: []
+    status_keywords: []
+
+  neuro_stroke_enceph:
+    diagnosis_keywords:
+      - stroke
+      - cva
+      - encephalopathy
+      - seizure
+      - ich
+      - sah
+    supports_keywords: []
+    status_keywords: []
+
+  ugi_bleed_variceal:
+    diagnosis_keywords:
+      - ugib
+      - upper gi bleed
+      - variceal
+      - hematemesis
+      - melena
+    supports_keywords: []
+    status_keywords: []
+
+  pe_bundle:
+    diagnosis_keywords: []
+    strict_diagnosis_keywords:
+      - pe
+      - pulm. embolism
+      - pulm embolism
+      - pulmonary embolism
+    supports_keywords: []
+    status_keywords: []
+
+suggested_tasks:
+  ventilated_critical:
+    high:
+      - ABG trend
+      - vent settings review
+      - VAP bundle check
+    medium:
+      - weaning/extubation readiness if mentioned
+    low: []
+
+  septic_shock_norad:
+    high:
+      - cultures status
+      - lactate trend
+      - source control/imaging
+    medium:
+      - vasopressor taper criteria
+    low: []
+
+  aki_ckd:
+    high:
+      - K/urea/creat trend
+      - RRT plan
+    medium:
+      - dialysis access status
+    low: []
+
+  neuro_stroke_enceph:
+    high:
+      - CT/MRI report follow-up
+      - EEG if seizures
+      - neuro consult follow-up
+    medium:
+      - DVT prophylaxis status
+    low: []
+
+  ugi_bleed_variceal:
+    high:
+      - octreotide ongoing
+      - UGIE timing
+      - PRBC targets
+    medium:
+      - coags/platelets if available
+    low: []
+
+  pe_bundle:
+    high:
+      - CTPA report
+      - anticoagulation status
+    medium:
+      - ortho/PAC if fracture
+    low: []
+
+missed_items:
+  ventilated_critical:
+    - label: ABG trend
+      match_any:
+        - abg
+        - blood gas
+    - label: vent settings review
+      match_any:
+        - vent settings
+        - ventilator settings
+        - vent review
+    - label: VAP bundle check
+      match_any:
+        - vap bundle
+    - label: weaning/extubation readiness if mentioned
+      match_any:
+        - weaning
+        - extubation readiness
+
+  septic_shock_norad:
+    - label: cultures status
+      match_any:
+        - culture
+    - label: lactate trend
+      match_any:
+        - lactate
+    - label: source control/imaging
+      match_any:
+        - source control
+        - imaging
+        - usg
+        - ct
+    - label: vasopressor taper criteria
+      match_any:
+        - vasopressor taper
+        - norad taper
+        - norepinephrine taper
+
+  aki_ckd:
+    - label: K/urea/creat trend
+      match_any:
+        - potassium
+        - k+
+        - urea
+        - creat
+        - creatinine
+    - label: RRT plan
+      match_any:
+        - rrt
+        - dialysis plan
+    - label: dialysis access status
+      match_any:
+        - dialysis access
+        - hd catheter
+
+  neuro_stroke_enceph:
+    - label: CT/MRI report follow-up
+      match_any:
+        - ct report
+        - mri report
+    - label: EEG if seizures
+      match_any:
+        - eeg
+    - label: neuro consult follow-up
+      match_any:
+        - neuro consult
+        - neurology
+    - label: DVT prophylaxis status
+      match_any:
+        - dvt prophylaxis
+        - vte prophylaxis
+
+  ugi_bleed_variceal:
+    - label: octreotide ongoing
+      match_any:
+        - octreotide
+    - label: UGIE timing
+      match_any:
+        - ugie
+    - label: PRBC targets
+      match_any:
+        - prbc
+        - transfusion target
+    - label: coags/platelets if available
+      match_any:
+        - inr
+        - coags
+        - platelets
+
+  pe_bundle:
+    - label: CTPA report
+      match_any:
+        - ctpa
+    - label: anticoagulation status
+      match_any:
+        - anticoag
+        - heparin
+        - lmwh
+    - label: ortho/PAC if fracture
+      match_any:
+        - ortho
+        - pac
+        - fracture

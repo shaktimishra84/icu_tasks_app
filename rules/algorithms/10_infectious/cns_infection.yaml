@@ -1,0 +1,35 @@
+name: CNS_Infection
+system_tag: 10_infectious
+diagnosis_keywords:
+  - meningitis
+  - encephalitis
+  - cns infection
+supports_keywords: []
+lab_keywords:
+  - csf
+  - lumbar puncture
+required_tests:
+  - name: CSF status
+    priority: High
+    evidence_keywords:
+      - csf
+      - lumbar puncture
+      - lp report
+required_imaging:
+  - name: CT/MRI report follow-up
+    priority: Medium
+    evidence_keywords:
+      - ct report
+      - mri report
+required_consults:
+  - name: Infectious disease consult
+    priority: High
+    evidence_keywords:
+      - infectious disease
+      - id consult
+  - name: Neurology consult
+    priority: Medium
+    evidence_keywords:
+      - neurology
+      - neuro consult
+required_care_checks: []

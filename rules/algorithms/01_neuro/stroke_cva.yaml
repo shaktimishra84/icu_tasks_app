@@ -1,0 +1,45 @@
+name: Stroke_CVA_Pathway
+system_tag: 01_neuro
+diagnosis_keywords:
+  - stroke
+  - cva
+  - infarct
+  - ich
+  - sah
+supports_keywords: []
+lab_keywords:
+  - ct brain
+  - ct head
+  - mri
+required_tests:
+  - name: Swallow evaluation
+    priority: Medium
+    evidence_keywords:
+      - swallow eval
+      - swallowing assessment
+  - name: PT/OT assessment
+    priority: Medium
+    evidence_keywords:
+      - pt/ot
+      - physiotherapy
+      - occupational therapy
+required_imaging:
+  - name: CT/MRI report follow-up
+    priority: High
+    evidence_keywords:
+      - ct report
+      - mri report
+      - ct brain report
+      - ct head report
+required_consults:
+  - name: Neurology consult
+    priority: High
+    evidence_keywords:
+      - neuro consult
+      - neurology
+required_care_checks:
+  - name: Neuro checks trend
+    priority: Medium
+    evidence_keywords:
+      - neuro checks
+      - gcs trend

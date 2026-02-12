@@ -1,0 +1,40 @@
+name: UGIB_Variceal_Protocol
+system_tag: 03_gi_hepatic
+diagnosis_keywords:
+  - ugib
+  - ugi bleed
+  - upper gastrointestinal bleeding
+  - variceal
+  - hematemesis
+  - melena
+supports_keywords: []
+lab_keywords:
+  - inr
+  - platelets
+  - hb
+  - hemoglobin
+  - ugie
+required_tests:
+  - name: Coag/platelets status
+    priority: High
+    evidence_keywords:
+      - inr
+      - coags
+      - platelets
+  - name: Blood products plan
+    priority: High
+    evidence_keywords:
+      - prbc
+      - transfusion plan
+      - blood products
+required_imaging:
+  - name: UGIE timing
+    priority: High
+    evidence_keywords:
+      - ugie
+required_consults:
+  - name: Gastro consult
+    priority: High
+    evidence_keywords:
+      - gastro consult
+      - gastro call

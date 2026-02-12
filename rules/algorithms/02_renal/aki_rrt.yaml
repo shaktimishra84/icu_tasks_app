@@ -1,0 +1,52 @@
+name: AKI_RRT
+system_tag: 02_renal
+diagnosis_keywords:
+  - aki
+  - acute kidney injury
+  - ckd
+  - chronic kidney disease
+  - uremia
+supports_keywords:
+  - rrt
+  - hd
+  - sled
+  - dialysis
+lab_keywords:
+  - creat
+  - creatinine
+  - urea
+  - potassium
+required_tests:
+  - name: K/urea/creat trend
+    priority: High
+    evidence_keywords:
+      - potassium
+      - urea
+      - creat
+      - creatinine
+  - name: RRT plan
+    priority: High
+    evidence_keywords:
+      - rrt plan
+      - dialysis plan
+      - hd plan
+      - sled plan
+required_imaging: []
+required_consults:
+  - name: Nephrology consult
+    priority: High
+    evidence_keywords:
+      - nephrology
+      - nephro consult
+      - nephrology call
+  - name: Dialysis access status
+    priority: Medium
+    evidence_keywords:
+      - dialysis access
+      - hd catheter
+required_care_checks:
+  - name: Fluid balance check
+    priority: Medium
+    evidence_keywords:
+      - fluid balance
+      - intake output

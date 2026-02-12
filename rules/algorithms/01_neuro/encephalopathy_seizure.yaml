@@ -1,0 +1,46 @@
+name: Encephalopathy_Seizure
+system_tag: 01_neuro
+diagnosis_keywords:
+  - encephalopathy
+  - seizure
+  - meningitis
+  - altered sensorium
+supports_keywords: []
+lab_keywords:
+  - eeg
+  - csf
+  - ammonia
+  - sodium
+required_tests:
+  - name: CSF status
+    priority: Medium
+    trigger_keywords:
+      - meningitis
+      - encephalopathy
+      - ams
+    evidence_keywords:
+      - csf
+      - lumbar puncture
+      - lp report
+  - name: EEG status
+    priority: High
+    trigger_keywords:
+      - seizure
+      - encephalopathy
+      - ams
+    evidence_keywords:
+      - eeg
+required_imaging: []
+required_consults:
+  - name: Neurology consult
+    priority: High
+    evidence_keywords:
+      - neuro consult
+      - neurology
+      - neurology call
+required_care_checks:
+  - name: Neuro checks trend
+    priority: Medium
+    evidence_keywords:
+      - neuro checks
+      - gcs trend

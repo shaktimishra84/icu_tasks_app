@@ -1,0 +1,53 @@
+name: SepticShock
+system_tag: 10_infectious
+diagnosis_keywords:
+  - septic shock
+  - sepsis
+  - septic
+  - shock
+supports_keywords:
+  - norad
+  - norepinephrine
+  - vasopressor
+lab_keywords:
+  - lactate
+  - culture
+required_tests:
+  - name: Cultures status
+    priority: High
+    evidence_keywords:
+      - culture
+      - blood culture
+  - name: Lactate trend
+    priority: High
+    evidence_keywords:
+      - lactate
+required_imaging:
+  - name: Source imaging follow-up
+    priority: High
+    evidence_keywords:
+      - usg
+      - ct
+      - mri
+      - source control
+  - name: Echocardiography if shock unclear
+    priority: Medium
+    trigger_keywords:
+      - shock
+      - vasopressor
+    evidence_keywords:
+      - 2d echo
+      - echocardiography
+required_consults:
+  - name: Infectious disease consult
+    priority: Medium
+    evidence_keywords:
+      - infectious disease
+      - id consult
+      - infection consult
+required_care_checks:
+  - name: Vasopressor taper criteria
+    priority: Medium
+    evidence_keywords:
+      - vasopressor taper
+      - norad taper
