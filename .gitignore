@@ -6,3 +6,7 @@ data/resources.json
 data/resources_index.json
 output/
 tmp_*.docx
+
+.DS_Store
+
+.DS_Store
