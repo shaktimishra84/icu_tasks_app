@@ -90,9 +90,8 @@ def _bed_sort_value(value: Any) -> tuple[int, int | str]:
     return (2, "")
 
 
-def _status_sort_key(row: dict[str, Any]) -> tuple[int, tuple[int, int | str], str]:
+def _bed_sort_key_for_pdf(row: dict[str, Any]) -> tuple[tuple[int, int | str], str]:
     return (
-        STATUS_ORDER.get(_status_group_for_pdf(row), 99),
         _bed_sort_value(row.get("Bed", "")),
         _normalize_text(row.get("Patient ID", "")),
     )
@@ -203,7 +202,7 @@ def _build_pending_tracker_rows(rows: list[dict[str, Any]]) -> list[list[str]]:
     sorted by bed ascending, then patient id.
     """
     tracker_rows: list[list[str]] = []
-    for row in sorted(rows, key=lambda current: (_bed_sort_value(current.get("Bed", "")), _normalize_text(current.get("Patient ID", "")))):
+    for row in sorted(rows, key=_bed_sort_key_for_pdf):
         if _status_group_for_pdf(row) == "DECEASED":
             continue
         for pending in _pending_items(row, max_items=50):
@@ -392,7 +391,8 @@ def generate_rounds_pdf(
         ),
     }
 
-    sorted_rows = sorted(rows, key=_status_sort_key)
+    # Keep PDF card order bed-wise to match app display, while preserving per-card status colors.
+    sorted_rows = sorted(rows, key=_bed_sort_key_for_pdf)
     critical_count, mv_count, vaso_count, pending_count = _status_counts(sorted_rows)
 
     story: list[Any] = []
