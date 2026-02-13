@@ -116,9 +116,23 @@ def _user_logged_in(user_obj: Any) -> bool:
     return bool(_user_email(user_obj))
 
 
+def _auth_secrets_configured() -> bool:
+    try:
+        auth = st.secrets.get("auth", {})
+    except Exception:
+        auth = {}
+    if not isinstance(auth, dict):
+        return False
+    required = ("redirect_uri", "cookie_secret", "client_id", "client_secret", "server_metadata_url")
+    return all(str(auth.get(key, "")).strip() for key in required)
+
+
 def _enforce_allowed_users() -> None:
     allowed = _allowed_users()
     if not allowed:
+        return
+    if not _auth_secrets_configured():
+        st.sidebar.warning("Access control skipped: `[auth]` secrets are incomplete.")
         return
 
     user_obj = _streamlit_user_obj()
@@ -549,10 +563,8 @@ st.set_page_config(page_title="ICU Task Assistant", layout="wide")
 try:
     _enforce_allowed_users()
 except Exception as error:
-    st.title("ICU Task Assistant")
-    st.error("Authentication setup error. Please check Streamlit secrets `[auth]` config.")
-    st.code(str(error))
-    st.stop()
+    st.sidebar.error("Authentication setup error. Running without access gate.")
+    st.sidebar.code(str(error))
 
 if "knowledge_base" not in st.session_state:
     st.session_state.knowledge_base = KnowledgeBase(
@@ -560,7 +572,7 @@ if "knowledge_base" not in st.session_state:
         store_path=RESOURCE_STORE,
     )
 if "index_ready" not in st.session_state:
-    st.session_state.index_ready = st.session_state.knowledge_base.load_from_store()
+    st.session_state.index_ready = False
 if "advisor" not in st.session_state:
     st.session_state.advisor = ClinicalTaskAdvisor()
 
