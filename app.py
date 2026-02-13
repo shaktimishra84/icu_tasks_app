@@ -613,13 +613,20 @@ resources_tab, case_tab = st.tabs(["Indexed Resources", "Case Review"])
 with resources_tab:
     st.subheader("Startup PDF Index")
     st.write(f"Root: `{RESOURCES_ROOT}`")
+    fs_pdf_paths = sorted(path for path in RESOURCES_ROOT.rglob("*.pdf") if path.is_file())
+    st.write(f"PDF files detected on disk: **{len(fs_pdf_paths)}**")
     st.write(f"Indexed PDF files: **{knowledge_base.file_count()}**")
     st.write(f"Indexed chunks: **{knowledge_base.chunk_count()}**")
+    if st.button("Build/Rebuild index now", use_container_width=True, key="build_index_in_tab"):
+        with st.spinner("Indexing resources/**/*.pdf ..."):
+            knowledge_base.build_from_resources()
+            st.session_state.index_ready = True
+        st.success("Index built successfully.")
     if knowledge_base.chunk_count() == 0:
         st.info("Index not built yet on this deployment. Use `Rebuild startup index` in sidebar.")
     indexed_files = knowledge_base.list_files()
     if not indexed_files:
-        st.info("No PDFs found under resources/**")
+        st.info("No indexed files yet. Build the index to enable retrieval.")
     else:
         for file_path in indexed_files:
             st.write(f"- `{file_path}`")
