@@ -460,6 +460,20 @@ def _safe_build_all_beds(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
     except RuntimeError as error:
         st.error(f"Batch generation failed: {error}")
         return []
+    except Exception as error:
+        st.error(f"Batch generation failed with unexpected error: {error}")
+        with st.expander("Batch error details", expanded=False):
+            st.exception(error)
+        return []
+
+
+def _show_extraction_error(filename: str, error: Exception) -> None:
+    if isinstance(error, ExtractionError):
+        st.error(f"File extraction failed for `{filename}`: {error}")
+        return
+    st.error(f"Unexpected extraction error for `{filename}`: {type(error).__name__}: {error}")
+    with st.expander("Extraction error details", expanded=False):
+        st.exception(error)
 
 
 def _render_deterioration_table(records: list[dict[str, Any]]) -> None:
@@ -656,8 +670,8 @@ with case_tab:
         for upload in selected_files:
             try:
                 extracted = extract_text(upload.name, upload.getvalue())
-            except ExtractionError as error:
-                st.error(f"Table extraction failed for `{upload.name}`: {error}")
+            except Exception as error:
+                _show_extraction_error(upload.name, error)
                 extraction_failed = True
                 continue
 
@@ -757,9 +771,9 @@ with case_tab:
 
         try:
             extracted = extract_text(patient_file.name, patient_file.getvalue())
-        except ExtractionError as error:
-            st.error(f"Patient file extraction failed: {error}")
-            st.stop()
+        except Exception as error:
+            _show_extraction_error(patient_file.name, error)
+            extracted = None
 
         if isinstance(extracted, dict):
             extracted_raw_text = str(extracted.get("raw_text", ""))
@@ -767,7 +781,7 @@ with case_tab:
             extracted_table_rows = rows if isinstance(rows, list) else []
             raw_rows = extracted.get("debug_raw_rows", [])
             debug_raw_rows = raw_rows if isinstance(raw_rows, list) else []
-        else:
+        elif isinstance(extracted, str):
             extracted_raw_text = extracted
 
     if extracted_table_rows and not round_files:
@@ -804,30 +818,30 @@ with case_tab:
 
             if not combined_text:
                 st.error("Provide patient text or upload a patient file.")
-                st.stop()
-
-            if knowledge_base.chunk_count() == 0:
-                loaded = knowledge_base.load_from_store()
-                if loaded:
-                    st.session_state.index_ready = True
-                else:
-                    st.error("Knowledge index is empty. Click `Rebuild startup index` in the sidebar first.")
-                    st.stop()
-
-            retrieved = knowledge_base.retrieve(
-                query=combined_text,
-                top_k=top_k,
-                only_neuro=use_only_neuro,
-            )
-            matched_chunks = [chunk for chunk, _ in retrieved]
-
-            with st.spinner("Generating recommendations..."):
-                result_markdown = advisor.analyze(combined_text, matched_chunks)
-
-            st.markdown(result_markdown)
-            st.subheader("Top sources used")
-            if not retrieved:
-                st.info("No matching indexed chunks found for this note.")
             else:
-                for chunk, score in retrieved:
-                    st.markdown(f"- `{chunk.file_name}` | page **{chunk.page_number}** | score `{score:.3f}`")
+                if knowledge_base.chunk_count() == 0:
+                    loaded = knowledge_base.load_from_store()
+                    if loaded:
+                        st.session_state.index_ready = True
+                    else:
+                        st.error("Knowledge index is empty. Click `Rebuild startup index` in the sidebar first.")
+                        combined_text = ""
+
+                if combined_text:
+                    retrieved = knowledge_base.retrieve(
+                        query=combined_text,
+                        top_k=top_k,
+                        only_neuro=use_only_neuro,
+                    )
+                    matched_chunks = [chunk for chunk, _ in retrieved]
+
+                    with st.spinner("Generating recommendations..."):
+                        result_markdown = advisor.analyze(combined_text, matched_chunks)
+
+                    st.markdown(result_markdown)
+                    st.subheader("Top sources used")
+                    if not retrieved:
+                        st.info("No matching indexed chunks found for this note.")
+                    else:
+                        for chunk, score in retrieved:
+                            st.markdown(f"- `{chunk.file_name}` | page **{chunk.page_number}** | score `{score:.3f}`")
