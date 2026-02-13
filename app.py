@@ -637,7 +637,7 @@ with resources_tab:
             st.session_state.index_ready = True
         st.success("Index built successfully.")
     if knowledge_base.chunk_count() == 0:
-        st.info("Index not built yet on this deployment. Use `Rebuild startup index` in sidebar.")
+        st.info("Index not built yet on this deployment. Click `Build/Rebuild index now` above.")
     indexed_files = knowledge_base.list_files()
     if not indexed_files:
         st.info("No indexed files yet. Build the index to enable retrieval.")
