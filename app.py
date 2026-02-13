@@ -29,6 +29,7 @@ DATA_DIR = APP_DIR / "data"
 RESOURCE_STORE = DATA_DIR / "resources_index.json"
 RESOURCES_ROOT = APP_DIR / "resources"
 ENV_FILE = APP_DIR / ".env"
+ENABLE_ACCESS_GATE = os.getenv("ENABLE_ACCESS_GATE", "0").strip().lower() in {"1", "true", "yes", "on"}
 
 
 def _load_local_env_file(path: Path = ENV_FILE) -> None:
@@ -560,11 +561,12 @@ def _render_all_beds_panel(all_beds_output: list[dict[str, Any]], key_prefix: st
 
 
 st.set_page_config(page_title="ICU Task Assistant", layout="wide")
-try:
-    _enforce_allowed_users()
-except Exception as error:
-    st.sidebar.error("Authentication setup error. Running without access gate.")
-    st.sidebar.code(str(error))
+if ENABLE_ACCESS_GATE:
+    try:
+        _enforce_allowed_users()
+    except Exception as error:
+        st.sidebar.error("Authentication setup error. Running without access gate.")
+        st.sidebar.code(str(error))
 
 if "knowledge_base" not in st.session_state:
     st.session_state.knowledge_base = KnowledgeBase(
