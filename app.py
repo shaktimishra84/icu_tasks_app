@@ -74,9 +74,15 @@ def _allowed_users() -> set[str]:
 
 def _streamlit_user_obj() -> Any:
     if hasattr(st, "user"):
-        return st.user
+        try:
+            return st.user
+        except Exception:
+            return None
     if hasattr(st, "experimental_user"):
-        return st.experimental_user
+        try:
+            return st.experimental_user
+        except Exception:
+            return None
     return None
 
 
@@ -124,7 +130,10 @@ def _enforce_allowed_users() -> None:
         st.warning("Sign-in required. Access is restricted to allowed users.")
         if hasattr(st, "login"):
             if st.button("Sign in", type="primary", use_container_width=True):
-                st.login()
+                try:
+                    st.login()
+                except Exception as error:
+                    st.error(f"Login is not configured correctly: {error}")
         else:
             st.error("This Streamlit runtime does not support `st.login`.")
         st.stop()
@@ -537,7 +546,13 @@ def _render_all_beds_panel(all_beds_output: list[dict[str, Any]], key_prefix: st
 
 
 st.set_page_config(page_title="ICU Task Assistant", layout="wide")
-_enforce_allowed_users()
+try:
+    _enforce_allowed_users()
+except Exception as error:
+    st.title("ICU Task Assistant")
+    st.error("Authentication setup error. Please check Streamlit secrets `[auth]` config.")
+    st.code(str(error))
+    st.stop()
 
 if "knowledge_base" not in st.session_state:
     st.session_state.knowledge_base = KnowledgeBase(
