@@ -29,7 +29,15 @@ DATA_DIR = APP_DIR / "data"
 RESOURCE_STORE = DATA_DIR / "resources_index.json"
 RESOURCES_ROOT = APP_DIR / "resources"
 ENV_FILE = APP_DIR / ".env"
-ENABLE_ACCESS_GATE = os.getenv("ENABLE_ACCESS_GATE", "0").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _truthy_env(name: str, default: bool = False) -> bool:
+    fallback = "1" if default else "0"
+    return os.getenv(name, fallback).strip().lower() in {"1", "true", "yes", "on"}
+
+
+ENABLE_ACCESS_GATE = _truthy_env("ENABLE_ACCESS_GATE", default=False)
+AUTO_BUILD_INDEX_ON_START = _truthy_env("AUTO_BUILD_INDEX_ON_START", default=True)
 
 
 def _load_local_env_file(path: Path = ENV_FILE) -> None:
@@ -476,6 +484,47 @@ def _show_extraction_error(filename: str, error: Exception) -> None:
         st.exception(error)
 
 
+def _ensure_startup_index(knowledge_base: KnowledgeBase) -> None:
+    if st.session_state.get("startup_index_checked", False):
+        return
+    st.session_state.startup_index_checked = True
+
+    try:
+        loaded = knowledge_base.load_from_store()
+    except Exception as error:
+        loaded = False
+        st.warning(f"Index store load failed: {error}")
+
+    if loaded and knowledge_base.chunk_count() > 0:
+        st.session_state.index_ready = True
+        st.session_state.startup_index_source = "store"
+        return
+
+    st.session_state.index_ready = False
+
+    if not AUTO_BUILD_INDEX_ON_START:
+        st.session_state.startup_index_source = "not_enabled"
+        return
+
+    has_pdfs = any(path.is_file() for path in RESOURCES_ROOT.rglob("*.pdf"))
+    if not has_pdfs:
+        st.session_state.startup_index_source = "no_pdfs"
+        return
+
+    with st.spinner("First run on this deployment: building PDF index..."):
+        try:
+            knowledge_base.build_from_resources()
+        except Exception as error:
+            st.session_state.startup_index_source = "build_failed"
+            st.error(f"Automatic startup index build failed: {error}")
+            with st.expander("Startup index build details", expanded=False):
+                st.exception(error)
+            return
+
+    st.session_state.index_ready = knowledge_base.chunk_count() > 0
+    st.session_state.startup_index_source = "auto_built"
+
+
 def _render_deterioration_table(records: list[dict[str, Any]]) -> None:
     if not records:
         return
@@ -601,6 +650,7 @@ st.warning(
     "Clinical decision support only. A licensed clinician must verify every recommendation before use.",
     icon="⚠️",
 )
+_ensure_startup_index(knowledge_base)
 
 st.sidebar.header("Settings")
 model_name = st.sidebar.text_input("LLM model", value=os.getenv("OPENAI_MODEL", advisor.model))
@@ -620,6 +670,7 @@ if st.sidebar.button("Rebuild startup index", use_container_width=True):
     with st.spinner("Indexing resources/**/*.pdf ..."):
         knowledge_base.build_from_resources()
         st.session_state.index_ready = True
+        st.session_state.startup_index_source = "manual_rebuild"
     st.sidebar.success("Index rebuilt from resources/**/*.pdf")
 
 resources_tab, case_tab = st.tabs(["Indexed Resources", "Case Review"])
@@ -628,6 +679,19 @@ with resources_tab:
     st.subheader("Startup PDF Index")
     st.write(f"Root: `{RESOURCES_ROOT}`")
     fs_pdf_paths = sorted(path for path in RESOURCES_ROOT.rglob("*.pdf") if path.is_file())
+    startup_source = str(st.session_state.get("startup_index_source", "")).strip()
+    if startup_source == "store":
+        st.caption("Startup index: loaded from saved local store.")
+    elif startup_source == "auto_built":
+        st.caption("Startup index: auto-built on first run for this deployment.")
+    elif startup_source == "build_failed":
+        st.caption("Startup index: automatic build failed. Use manual rebuild.")
+    elif startup_source == "not_enabled":
+        st.caption("Startup index: auto-build is disabled by configuration.")
+    elif startup_source == "no_pdfs":
+        st.caption("Startup index: no PDF files found under resources.")
+    elif startup_source == "manual_rebuild":
+        st.caption("Startup index: manually rebuilt.")
     st.write(f"PDF files detected on disk: **{len(fs_pdf_paths)}**")
     st.write(f"Indexed PDF files: **{knowledge_base.file_count()}**")
     st.write(f"Indexed chunks: **{knowledge_base.chunk_count()}**")
@@ -635,6 +699,7 @@ with resources_tab:
         with st.spinner("Indexing resources/**/*.pdf ..."):
             knowledge_base.build_from_resources()
             st.session_state.index_ready = True
+            st.session_state.startup_index_source = "manual_rebuild"
         st.success("Index built successfully.")
     if knowledge_base.chunk_count() == 0:
         st.info("Index not built yet on this deployment. Click `Build/Rebuild index now` above.")
