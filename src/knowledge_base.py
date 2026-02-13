@@ -159,6 +159,37 @@ class KnowledgeBase:
         with self.store_path.open("w", encoding="utf-8") as file_handle:
             json.dump(payload, file_handle, indent=2)
 
+    def load_from_store(self) -> bool:
+        if not self.store_path.exists():
+            return False
+        try:
+            with self.store_path.open("r", encoding="utf-8") as file_handle:
+                payload = json.load(file_handle)
+        except Exception:
+            return False
+
+        chunks_raw = payload.get("chunks", []) if isinstance(payload, dict) else []
+        loaded_chunks: list[ResourceChunk] = []
+        for raw in chunks_raw:
+            if not isinstance(raw, dict):
+                continue
+            try:
+                loaded_chunks.append(
+                    ResourceChunk(
+                        file_path=str(raw.get("file_path", "")),
+                        file_name=str(raw.get("file_name", "")),
+                        page_number=int(raw.get("page_number", 0)),
+                        chunk_index=int(raw.get("chunk_index", 0)),
+                        system_tag=str(raw.get("system_tag", "unclassified")),
+                        text=str(raw.get("text", "")),
+                    )
+                )
+            except Exception:
+                continue
+        self._chunks = loaded_chunks
+        self._last_indexed_files = [chunk.file_path for chunk in loaded_chunks]
+        return bool(loaded_chunks)
+
     def chunk_count(self) -> int:
         return len(self._chunks)
 

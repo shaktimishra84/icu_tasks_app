@@ -59,6 +59,7 @@ streamlit run app.py
 - If no `OPENAI_API_KEY` is set, the app falls back to a generic rules-based checklist.
 - All-beds output can be exported as a print-ready rounds PDF (`output/ICU_Rounds_<date>_<shift>.pdf`) using ReportLab.
 - If `ALLOWED_USERS` is set, app access is restricted to signed-in users in that allow-list.
+- On fresh cloud deploys, click **Rebuild startup index** once to build the PDF resource index.
 
 ## GitHub Deployment (4 users)
 

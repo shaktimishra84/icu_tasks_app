@@ -560,8 +560,7 @@ if "knowledge_base" not in st.session_state:
         store_path=RESOURCE_STORE,
     )
 if "index_ready" not in st.session_state:
-    st.session_state.knowledge_base.build_from_resources()
-    st.session_state.index_ready = True
+    st.session_state.index_ready = st.session_state.knowledge_base.load_from_store()
 if "advisor" not in st.session_state:
     st.session_state.advisor = ClinicalTaskAdvisor()
 
@@ -590,7 +589,9 @@ else:
     st.sidebar.warning("OPENAI_API_KEY missing - fallback mode")
 
 if st.sidebar.button("Rebuild startup index", use_container_width=True):
-    knowledge_base.build_from_resources()
+    with st.spinner("Indexing resources/**/*.pdf ..."):
+        knowledge_base.build_from_resources()
+        st.session_state.index_ready = True
     st.sidebar.success("Index rebuilt from resources/**/*.pdf")
 
 resources_tab, case_tab = st.tabs(["Indexed Resources", "Case Review"])
@@ -600,6 +601,8 @@ with resources_tab:
     st.write(f"Root: `{RESOURCES_ROOT}`")
     st.write(f"Indexed PDF files: **{knowledge_base.file_count()}**")
     st.write(f"Indexed chunks: **{knowledge_base.chunk_count()}**")
+    if knowledge_base.chunk_count() == 0:
+        st.info("Index not built yet on this deployment. Use `Rebuild startup index` in sidebar.")
     indexed_files = knowledge_base.list_files()
     if not indexed_files:
         st.info("No PDFs found under resources/**")
@@ -781,6 +784,14 @@ with case_tab:
             if not combined_text:
                 st.error("Provide patient text or upload a patient file.")
                 st.stop()
+
+            if knowledge_base.chunk_count() == 0:
+                loaded = knowledge_base.load_from_store()
+                if loaded:
+                    st.session_state.index_ready = True
+                else:
+                    st.error("Knowledge index is empty. Click `Rebuild startup index` in the sidebar first.")
+                    st.stop()
 
             retrieved = knowledge_base.retrieve(
                 query=combined_text,
