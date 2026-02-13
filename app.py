@@ -151,6 +151,16 @@ def _status_chip(status_group: str) -> str:
     return f"<span style='background:{color};color:white;padding:2px 8px;border-radius:999px;font-size:12px;'>{escape(status_group)}</span>"
 
 
+def _status_color(status_group: str) -> str:
+    return {
+        "CRITICAL": "#b91c1c",
+        "SICK": "#b45309",
+        "SERIOUS": "#854d0e",
+        "DECEASED": "#374151",
+        "OTHER": "#334155",
+    }.get(status_group, "#334155")
+
+
 def _badge(label: str, color: str = "#0f172a") -> str:
     return (
         f"<span style='background:{color};color:white;padding:2px 8px;border-radius:999px;"
@@ -285,6 +295,7 @@ def _apply_filters(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _render_bed_card(record: dict[str, Any]) -> None:
     status_group = str(record.get("_status_group", "OTHER"))
+    status_color = _status_color(status_group)
     flags = record.get("_flags", [])
     severity = str(record.get("_flag_severity", "NONE"))
     trend = str(record.get("Round trend", "")).strip()
@@ -295,6 +306,10 @@ def _render_bed_card(record: dict[str, Any]) -> None:
     matched_algorithms = [str(x) for x in (record.get("_matched_algorithms", []) or [])]
 
     with st.container(border=True):
+        st.markdown(
+            f"<div style='height:4px;background:{status_color};border-radius:4px;margin-bottom:8px;'></div>",
+            unsafe_allow_html=True,
+        )
         if is_deteriorated:
             st.markdown(
                 f"<div style='font-weight:700;color:#b91c1c;margin-bottom:4px;'>"
@@ -334,32 +349,32 @@ def _render_bed_card(record: dict[str, Any]) -> None:
             st.markdown("**DECEASED**")
             pending_admin = record.get("Pending (verbatim)", "")
             if pending_admin:
-                st.markdown(pending_admin)
+                _render_safe_items(pending_admin, max_items=2)
             return
 
         st.markdown("**A) Missing (High priority first)**")
         st.markdown("**Tests:**")
-        st.markdown(record.get("Missing Tests", "") or "-")
+        _render_safe_items(record.get("Missing Tests", ""), max_items=6)
         st.markdown("**Imaging:**")
-        st.markdown(record.get("Missing Imaging", "") or "-")
+        _render_safe_items(record.get("Missing Imaging", ""), max_items=6)
         st.markdown("**Consults:**")
-        st.markdown(record.get("Missing Consults", "") or "-")
+        _render_safe_items(record.get("Missing Consults", ""), max_items=6)
         st.markdown("**Care checks (deterministic):**")
-        st.markdown(record.get("Care checks (deterministic)", "") or "-")
+        _render_safe_items(record.get("Care checks (deterministic)", ""), max_items=6)
 
         if st.session_state.get("show_already_covered", False):
             st.markdown("**B) Already covered**")
             st.markdown("**Tests:**")
-            st.markdown(record.get("_covered_tests", "") or "-")
+            _render_safe_items(record.get("_covered_tests", ""), max_items=6)
             st.markdown("**Imaging:**")
-            st.markdown(record.get("_covered_imaging", "") or "-")
+            _render_safe_items(record.get("_covered_imaging", ""), max_items=6)
             st.markdown("**Consults:**")
-            st.markdown(record.get("_covered_consults", "") or "-")
+            _render_safe_items(record.get("_covered_consults", ""), max_items=6)
             st.markdown("**Care checks:**")
-            st.markdown(record.get("_covered_care_checks", "") or "-")
+            _render_safe_items(record.get("_covered_care_checks", ""), max_items=6)
 
         st.markdown("**C) Pending (verbatim)**")
-        st.markdown(record.get("Pending (verbatim)", "") or "-")
+        _render_safe_items(record.get("Pending (verbatim)", ""), max_items=6)
 
         st.markdown(f"**Key labs/imaging:** {_decision_labs_line(str(record.get('Key labs/imaging (1 line)', '')))}")
 
@@ -367,6 +382,49 @@ def _render_bed_card(record: dict[str, Any]) -> None:
 def _status_sort_key(record: dict[str, Any]) -> tuple[int, str]:
     order = {"CRITICAL": 0, "SICK": 1, "SERIOUS": 2, "DECEASED": 3, "OTHER": 4}
     return order.get(str(record.get("_status_group", "OTHER")), 9), str(record.get("Bed", ""))
+
+
+def _bed_sort_value(value: Any) -> tuple[int, int | str]:
+    text = str(value or "").strip()
+    match = re.search(r"\d+", text)
+    if match:
+        return (0, int(match.group(0)))
+    if text:
+        return (1, text)
+    return (2, "")
+
+
+def _bed_sort_key(record: dict[str, Any]) -> tuple[tuple[int, int | str], str]:
+    return _bed_sort_value(record.get("Bed", "")), str(record.get("Patient ID", ""))
+
+
+def _split_display_items(text: Any) -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
+    for chunk in re.split(r"\n|;|\s\|\s", str(text or "")):
+        cleaned = re.sub(r"^[\-\*\u2022]+\s*", "", chunk).strip()
+        if not cleaned:
+            continue
+        if cleaned.lower() in {"-", "none", "nil", "na", "n/a"}:
+            continue
+        key = cleaned.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        values.append(cleaned)
+    return values
+
+
+def _render_safe_items(text: Any, max_items: int = 6) -> None:
+    items = _split_display_items(text)[:max_items]
+    if not items:
+        st.markdown("<div style='color:#64748b;'>-</div>", unsafe_allow_html=True)
+        return
+    for item in items:
+        st.markdown(
+            f"<div style='font-size:14px;line-height:1.35;margin:1px 0;'>• {escape(item)}</div>",
+            unsafe_allow_html=True,
+        )
 
 def _default_round_shift() -> str:
     return "Morning" if datetime.now().hour < 16 else "Evening"
@@ -416,7 +474,7 @@ def _render_all_beds_panel(all_beds_output: list[dict[str, Any]], key_prefix: st
     if not all_beds_output:
         return
 
-    all_beds_output = sorted(all_beds_output, key=_status_sort_key)
+    all_beds_output = sorted(all_beds_output, key=_bed_sort_key)
     _render_summary_tiles(all_beds_output)
 
     has_round_trend = any(str(row.get("Round trend", "")).strip() for row in all_beds_output)
@@ -435,17 +493,11 @@ def _render_all_beds_panel(all_beds_output: list[dict[str, Any]], key_prefix: st
         key=show_covered_key,
     )
 
-    filtered_records = _apply_filters(all_beds_output)
+    filtered_records = sorted(_apply_filters(all_beds_output), key=_bed_sort_key)
     st.caption(f"Showing {len(filtered_records)} of {len(all_beds_output)} beds after filters")
-
-    status_groups = ["CRITICAL", "SICK", "SERIOUS", "DECEASED", "OTHER"]
-    for group in status_groups:
-        group_rows = [row for row in filtered_records if row.get("_status_group") == group]
-        if not group_rows:
-            continue
-        with st.expander(f"{group} ({len(group_rows)})", expanded=(group == "CRITICAL")):
-            for row in group_rows:
-                _render_bed_card(row)
+    st.caption("Bed-wise order: ascending bed number. Status is color-coded on each card.")
+    for row in filtered_records:
+        _render_bed_card(row)
 
     shift_options = ["Morning", "Evening"]
     default_shift = _default_round_shift()
