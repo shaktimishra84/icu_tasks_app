@@ -266,6 +266,94 @@ def _render_summary_tiles(records: list[dict[str, Any]]) -> None:
     c6.metric("Pending reports", pending_count)
 
 
+def _patient_id_key(value: Any) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
+def _extract_source_output_discrepancies(
+    source_rows: list[dict[str, Any]],
+    output_rows: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    source_by_pid: dict[str, str] = {}
+    output_by_pid: dict[str, str] = {}
+    pid_display: dict[str, str] = {}
+
+    for row in source_rows:
+        patient_id = str(row.get("patient_id", "")).strip()
+        bed = str(row.get("bed", "")).strip()
+        key = _patient_id_key(patient_id)
+        if not key:
+            continue
+        pid_display.setdefault(key, patient_id)
+        if key not in source_by_pid:
+            source_by_pid[key] = bed
+
+    for row in output_rows:
+        patient_id = str(row.get("Patient ID", "")).strip()
+        bed = str(row.get("Bed", "")).strip()
+        key = _patient_id_key(patient_id)
+        if not key:
+            continue
+        pid_display.setdefault(key, patient_id)
+        if key not in output_by_pid:
+            output_by_pid[key] = bed
+
+    missing_in_output: list[str] = []
+    extra_in_output: list[str] = []
+    bed_mismatch: list[str] = []
+
+    for key, source_bed in source_by_pid.items():
+        if key not in output_by_pid:
+            missing_in_output.append(f"{pid_display.get(key, key)} (Bed {source_bed or '-'})")
+            continue
+        output_bed = output_by_pid.get(key, "")
+        if source_bed and output_bed and source_bed != output_bed:
+            bed_mismatch.append(
+                f"{pid_display.get(key, key)}: Word Bed {source_bed} -> PDF Bed {output_bed}"
+            )
+
+    for key, output_bed in output_by_pid.items():
+        if key not in source_by_pid:
+            extra_in_output.append(f"{pid_display.get(key, key)} (Bed {output_bed or '-'})")
+
+    missing_in_output.sort()
+    extra_in_output.sort()
+    bed_mismatch.sort()
+    return {
+        "missing_in_output": missing_in_output,
+        "extra_in_output": extra_in_output,
+        "bed_mismatch": bed_mismatch,
+    }
+
+
+def _render_discrepancy_audit(source_rows: list[dict[str, Any]], output_rows: list[dict[str, Any]]) -> bool:
+    if not source_rows or not output_rows:
+        return False
+    discrepancies = _extract_source_output_discrepancies(source_rows, output_rows)
+    missing_in_output = discrepancies["missing_in_output"]
+    extra_in_output = discrepancies["extra_in_output"]
+    bed_mismatch = discrepancies["bed_mismatch"]
+    has_discrepancy = bool(missing_in_output or extra_in_output or bed_mismatch)
+
+    if has_discrepancy:
+        st.error(
+            "Source-vs-output mismatch detected. Please review before downloading PDF."
+        )
+        with st.expander("Discrepancy audit (Word table vs generated output)", expanded=True):
+            st.markdown(f"- Missing in PDF output: **{len(missing_in_output)}**")
+            for item in missing_in_output[:50]:
+                st.markdown(f"  - {item}")
+            st.markdown(f"- Present in PDF but missing in Word: **{len(extra_in_output)}**")
+            for item in extra_in_output[:50]:
+                st.markdown(f"  - {item}")
+            st.markdown(f"- Bed number mismatches: **{len(bed_mismatch)}**")
+            for item in bed_mismatch[:50]:
+                st.markdown(f"  - {item}")
+    else:
+        st.success("Discrepancy audit passed: Word table and generated output patient mapping are aligned.")
+    return has_discrepancy
+
+
 def _apply_filters(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     st.sidebar.subheader("Round Filters")
     status_filter = st.sidebar.selectbox(
@@ -557,12 +645,17 @@ def _render_deterioration_table(records: list[dict[str, Any]]) -> None:
     )
 
 
-def _render_all_beds_panel(all_beds_output: list[dict[str, Any]], key_prefix: str = "default") -> None:
+def _render_all_beds_panel(
+    all_beds_output: list[dict[str, Any]],
+    key_prefix: str = "default",
+    source_rows: list[dict[str, Any]] | None = None,
+) -> None:
     if not all_beds_output:
         return
 
     all_beds_output = sorted(all_beds_output, key=_bed_sort_key)
     _render_summary_tiles(all_beds_output)
+    has_discrepancy = _render_discrepancy_audit(source_rows or [], all_beds_output)
 
     has_round_trend = any(str(row.get("Round trend", "")).strip() for row in all_beds_output)
     if has_round_trend:
@@ -600,7 +693,12 @@ def _render_all_beds_panel(all_beds_output: list[dict[str, Any]], key_prefix: st
     st.markdown("### Rounds PDF")
     pdf_bytes_key = f"rounds_pdf_bytes_{key_prefix}"
     pdf_file_key = f"rounds_pdf_file_{key_prefix}"
-    if st.button("Generate Rounds PDF", use_container_width=True, key=f"generate_rounds_pdf_{key_prefix}"):
+    if st.button(
+        "Generate Rounds PDF",
+        use_container_width=True,
+        key=f"generate_rounds_pdf_{key_prefix}",
+        disabled=has_discrepancy,
+    ):
         try:
             pdf_bytes, pdf_path = generate_rounds_pdf(all_beds_output, shift=rounds_shift)
         except RuntimeError as error:
@@ -611,6 +709,8 @@ def _render_all_beds_panel(all_beds_output: list[dict[str, Any]], key_prefix: st
             st.session_state[pdf_bytes_key] = pdf_bytes
             st.session_state[pdf_file_key] = pdf_path.name
             st.success(f"Rounds PDF generated: `{pdf_path}`")
+    if has_discrepancy:
+        st.caption("PDF generation is disabled until source/output discrepancies are resolved.")
 
     if st.session_state.get(pdf_bytes_key):
         st.download_button(
@@ -727,6 +827,7 @@ with case_tab:
         round_signature = "|".join(f"{item.name}:{getattr(item, 'size', 0)}" for item in selected_files)
         if st.session_state.get("round_compare_signature") != round_signature:
             st.session_state.pop("all_beds_output", None)
+            st.session_state.pop("all_beds_source_rows", None)
             st.session_state.pop("all_beds_compare_context", None)
             st.session_state["round_compare_signature"] = round_signature
 
@@ -749,16 +850,27 @@ with case_tab:
             table_rows = rows if isinstance(rows, list) else []
             raw_rows = extracted.get("debug_raw_rows", [])
             debug_rows = raw_rows if isinstance(raw_rows, list) else []
+            parse_warnings_raw = extracted.get("parse_warnings", [])
+            parse_warnings = parse_warnings_raw if isinstance(parse_warnings_raw, list) else []
+            selected_table_index = extracted.get("table_index")
             parsed_docs.append(
                 {
                     "name": upload.name,
                     "rows": table_rows,
                     "debug_raw_rows": debug_rows,
+                    "parse_warnings": [str(item) for item in parse_warnings],
+                    "table_index": selected_table_index,
                 }
             )
 
         for doc in parsed_docs:
             st.write(f"`{doc['name']}` -> Beds parsed = {len(doc['rows'])}")
+            if doc.get("table_index") is not None:
+                st.caption(f"Selected table index: {doc['table_index']}")
+            if doc.get("parse_warnings"):
+                with st.expander(f"Parser warnings: {doc['name']}", expanded=False):
+                    for warning in doc["parse_warnings"]:
+                        st.markdown(f"- {warning}")
 
         if not extraction_failed and parsed_docs:
             if len(parsed_docs) == 2:
@@ -788,6 +900,7 @@ with case_tab:
                     if older_output and newer_output:
                         compared_output = compare_rounds_outputs(older_output, newer_output)
                         st.session_state.all_beds_output = compared_output
+                        st.session_state.all_beds_source_rows = list(newer_doc["rows"])
                         st.session_state.all_beds_compare_context = (
                             f"Compared newer `{newer_doc['name']}` against older `{older_doc['name']}` "
                             f"(inferred by {reason})."
@@ -805,14 +918,16 @@ with case_tab:
                     single_output = _safe_build_all_beds(only_doc["rows"])
                     if single_output:
                         st.session_state.all_beds_output = single_output
+                        st.session_state.all_beds_source_rows = list(only_doc["rows"])
                         st.session_state.pop("all_beds_compare_context", None)
 
             all_beds_output = st.session_state.get("all_beds_output", [])
+            source_rows = st.session_state.get("all_beds_source_rows", [])
             compare_context = st.session_state.get("all_beds_compare_context", "")
             if compare_context:
                 st.caption(compare_context)
             if all_beds_output:
-                _render_all_beds_panel(all_beds_output, key_prefix="round_compare")
+                _render_all_beds_panel(all_beds_output, key_prefix="round_compare", source_rows=source_rows)
 
     st.divider()
     st.subheader("Patient Note Input")
@@ -827,11 +942,14 @@ with case_tab:
     extracted_raw_text = ""
     extracted_table_rows: list[dict[str, str]] = []
     debug_raw_rows: list[list[str]] = []
+    extracted_parse_warnings: list[str] = []
+    extracted_table_index: int | None = None
 
     if patient_file is not None:
         file_signature = f"{patient_file.name}:{getattr(patient_file, 'size', 0)}"
         if st.session_state.get("all_beds_file_signature") != file_signature:
             st.session_state.pop("all_beds_output", None)
+            st.session_state.pop("all_beds_source_rows", None)
             st.session_state["all_beds_file_signature"] = file_signature
 
         try:
@@ -846,12 +964,24 @@ with case_tab:
             extracted_table_rows = rows if isinstance(rows, list) else []
             raw_rows = extracted.get("debug_raw_rows", [])
             debug_raw_rows = raw_rows if isinstance(raw_rows, list) else []
+            parse_warnings_raw = extracted.get("parse_warnings", [])
+            if isinstance(parse_warnings_raw, list):
+                extracted_parse_warnings = [str(item) for item in parse_warnings_raw]
+            table_index_raw = extracted.get("table_index")
+            if isinstance(table_index_raw, int):
+                extracted_table_index = table_index_raw
         elif isinstance(extracted, str):
             extracted_raw_text = extracted
 
     if extracted_table_rows and not round_files:
         st.info("Structured DOCX bed table detected. Single-note path is disabled for this file.")
         st.write(f"Beds parsed = {len(extracted_table_rows)}")
+        if extracted_table_index is not None:
+            st.caption(f"Selected table index: {extracted_table_index}")
+        if extracted_parse_warnings:
+            with st.expander("Parser warnings", expanded=False):
+                for warning in extracted_parse_warnings:
+                    st.markdown(f"- {warning}")
 
         with st.expander("Debug parsed records", expanded=False):
             st.json(extracted_table_rows[:2])
@@ -865,10 +995,12 @@ with case_tab:
             single_note_output = _safe_build_all_beds(extracted_table_rows)
             if single_note_output:
                 st.session_state.all_beds_output = single_note_output
+                st.session_state.all_beds_source_rows = list(extracted_table_rows)
 
         all_beds_output = st.session_state.get("all_beds_output", [])
+        source_rows = st.session_state.get("all_beds_source_rows", [])
         if all_beds_output:
-            _render_all_beds_panel(all_beds_output, key_prefix="single_note")
+            _render_all_beds_panel(all_beds_output, key_prefix="single_note", source_rows=source_rows)
     elif patient_file is not None and patient_file.name.lower().endswith(".docx") and not round_files:
         st.write("Beds parsed = 0")
         with st.expander("Debug parsed records", expanded=False):
