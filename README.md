@@ -58,6 +58,13 @@ streamlit run app.py
   - Highlights possible missed workup items
 - If no `OPENAI_API_KEY` is set, the app falls back to a generic rules-based checklist.
 - All-beds output can be exported as a print-ready rounds PDF (`output/ICU_Rounds_<date>_<shift>.pdf`) using ReportLab.
+- ICU tracker round records are stored locally per unit in `data/icu_<unit>.db` (SQLite):
+  - one record per `date + shift` (re-saving same slot overwrites deterministically)
+  - patient matching is deterministic: `Patient ID` first, bed fallback only when ID is missing
+  - dashboard deltas and patient course are computed with string/rules diffs only (no AI inference)
+  - selected patient rows can be corrected in-app (fields are re-saved locally and the dashboard is recomputed deterministically)
+  - app now includes ICU navigation selector (`MICU`, `CCM ICU`, `ICU 1-7`, `Berhampur ICU`) so each unit keeps its own timeline
+  - patient-course tab can export a structured ICU course/handoff `.docx` report (SBAR + trajectory + missed-items crosscheck)
 - If `ALLOWED_USERS` is set, app access is restricted to signed-in users in that allow-list.
 - On fresh cloud deploys, click **Rebuild startup index** once to build the PDF resource index.
  - Access gate is opt-in for cloud stability: set `ENABLE_ACCESS_GATE=1` only after auth secrets are verified.

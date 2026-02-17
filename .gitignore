@@ -1,9 +1,12 @@
 .env
+.streamlit/secrets.toml
+streamlit.log
 __pycache__/
 .pytest_cache/
 *.pyc
 data/resources.json
 data/resources_index.json
+data/*.db
 output/
 tmp_*.docx
 
