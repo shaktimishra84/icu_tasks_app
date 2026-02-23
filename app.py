@@ -93,6 +93,17 @@ def _split_emails(raw: str) -> set[str]:
     return emails
 
 
+def _uploaded_file_fingerprint(uploaded_file: Any) -> str:
+    name = str(getattr(uploaded_file, "name", "")).strip()
+    size = int(getattr(uploaded_file, "size", 0) or 0)
+    try:
+        data = uploaded_file.getvalue()
+    except Exception:
+        data = b""
+    digest = hash_payload(data)[:12] if data else "nohash"
+    return f"{name}:{size}:{digest}"
+
+
 def _allowed_users() -> set[str]:
     env_allowed = _split_emails(os.getenv("ALLOWED_USERS", ""))
     if env_allowed:
@@ -2217,10 +2228,12 @@ with case_tab:
     extracted_table_index: int | None = None
 
     if patient_file is not None:
-        file_signature = f"{patient_file.name}:{getattr(patient_file, 'size', 0)}"
+        file_signature = _uploaded_file_fingerprint(patient_file)
         if st.session_state.get("all_beds_file_signature") != file_signature:
             st.session_state.pop("all_beds_output", None)
             st.session_state.pop("all_beds_source_rows", None)
+            st.session_state.pop("rounds_pdf_bytes_single_note", None)
+            st.session_state.pop("rounds_pdf_file_single_note", None)
             st.session_state["all_beds_file_signature"] = file_signature
 
         try:
