@@ -101,14 +101,43 @@ def _normalize_header(text: str) -> str:
     return normalized
 
 
+def _alias_score(cell_text: str, alias_text: str) -> int:
+    cell = _normalize_header(cell_text)
+    alias = _normalize_header(alias_text)
+    if not cell or not alias:
+        return 0
+    if cell == alias:
+        return 5
+    if re.search(rf"\b{re.escape(alias)}\b", cell):
+        return 4
+    if alias in cell:
+        return 3
+    if len(cell) >= 5 and cell in alias:
+        return 2
+
+    cell_tokens = {token for token in cell.split() if token}
+    alias_tokens = {token for token in alias.split() if token}
+    if not cell_tokens or not alias_tokens:
+        return 0
+    overlap = len(cell_tokens & alias_tokens)
+    if overlap >= 2:
+        return 2
+    if overlap == 1 and max(len(token) for token in alias_tokens) >= 4:
+        return 1
+    return 0
+
+
 def _canonical_docx_field(header: str) -> str | None:
-    normalized = _normalize_header(header)
-    if not normalized:
-        return None
+    best_field: str | None = None
+    best_score = 0
     for canonical_key, aliases in DOCX_HEADER_ALIASES.items():
         for alias in aliases:
-            if normalized == _normalize_header(alias):
-                return canonical_key
+            score = _alias_score(header, alias)
+            if score > best_score:
+                best_field = canonical_key
+                best_score = score
+    if best_score >= 3:
+        return best_field
     return None
 
 
@@ -135,11 +164,69 @@ def _is_template_value(value: str) -> bool:
 
 
 def _row_matches_expected_header(cells: list[str]) -> bool:
-    if len(cells) < len(DOCX_HEADER_SEQUENCE):
+    return _match_header_columns(cells) is not None
+
+
+def _match_header_columns(cells: list[str]) -> dict[str, int] | None:
+    if not cells:
+        return None
+
+    candidates: list[tuple[int, int, str]] = []
+    for idx, cell in enumerate(cells):
+        for field in DOCX_HEADER_SEQUENCE:
+            for alias in DOCX_HEADER_ALIASES.get(field, []):
+                score = _alias_score(cell, alias)
+                if score > 0:
+                    candidates.append((score, idx, field))
+
+    if not candidates:
+        return None
+
+    candidates.sort(key=lambda item: (-item[0], item[1], DOCX_HEADER_SEQUENCE.index(item[2])))
+    field_map: dict[str, int] = {}
+    used_idx: set[int] = set()
+    for score, idx, field in candidates:
+        if idx in used_idx:
+            continue
+        if field in field_map:
+            continue
+        # weak token overlaps are too noisy for header detection.
+        if score < 2:
+            continue
+        field_map[field] = idx
+        used_idx.add(idx)
+
+    required = {"bed", "patient_id", "diagnosis"}
+    if not required.issubset(field_map):
+        return None
+    if len(field_map) < 6:
+        return None
+    return field_map
+
+
+def _is_header_like_row(cells: list[str], header_map: dict[str, int]) -> bool:
+    row_map = _match_header_columns(cells)
+    if row_map is None:
         return False
-    first_ten = _pad_row(cells, len(DOCX_HEADER_SEQUENCE))[: len(DOCX_HEADER_SEQUENCE)]
-    mapped = [_canonical_docx_field(cell) for cell in first_ten]
-    return mapped == DOCX_HEADER_SEQUENCE
+    overlap = set(row_map) & set(header_map)
+    return len(overlap) >= 6
+
+
+def _cell_at(cells: list[str], index: int | None) -> str:
+    if index is None:
+        return ""
+    if index < 0 or index >= len(cells):
+        return ""
+    return str(cells[index]).strip()
+
+
+def _extract_row_values(cells: list[str], header_map: dict[str, int]) -> dict[str, str]:
+    row_values: dict[str, str] = {}
+    for field in DOCX_HEADER_SEQUENCE[1:]:
+        value = _cell_at(cells, header_map.get(field))
+        if value and not _is_template_value(value):
+            row_values[field] = value
+    return row_values
 
 
 def _patient_key(value: str) -> str:
@@ -162,36 +249,35 @@ def _append_record_value(record: dict[str, str], field: str, value: str) -> None
 
 def _parse_bed_table(rows_as_cells: list[list[str]]) -> tuple[list[dict[str, str]], list[str]]:
     warnings: list[str] = []
-    header_index = -1
+    best_header_index: int | None = None
+    best_header_map: dict[str, int] | None = None
+    best_score = -1
     for index, cells in enumerate(rows_as_cells):
-        padded = _pad_row(cells, len(DOCX_HEADER_SEQUENCE))[: len(DOCX_HEADER_SEQUENCE)]
-        if _row_matches_expected_header(padded):
-            header_index = index
-            break
+        header_map = _match_header_columns(cells)
+        if header_map is None:
+            continue
+        score = len(header_map)
+        if score > best_score:
+            best_score = score
+            best_header_index = index
+            best_header_map = header_map
 
-    if header_index < 0:
+    if best_header_index is None or best_header_map is None:
         return [], warnings
 
     parsed_rows: list[dict[str, str]] = []
     current_record: dict[str, str] | None = None
 
-    for cells in rows_as_cells[header_index + 1 :]:
-        padded = _pad_row(cells, len(DOCX_HEADER_SEQUENCE))
-        first_ten = padded[: len(DOCX_HEADER_SEQUENCE)]
-
-        if _row_matches_expected_header(first_ten):
-            continue
-        if all(_is_template_value(value) for value in first_ten):
+    for cells in rows_as_cells[best_header_index + 1 :]:
+        if _is_header_like_row(cells, best_header_map):
             continue
 
-        bed_cell = first_ten[0].strip()
+        bed_cell = _cell_at(cells, best_header_map.get("bed"))
         bed_digits = _extract_bed_digits(bed_cell)
+        row_values = _extract_row_values(cells, best_header_map)
 
-        row_values: dict[str, str] = {}
-        for index, field in enumerate(DOCX_HEADER_SEQUENCE[1:], start=1):
-            value = first_ten[index].strip()
-            if value and not _is_template_value(value):
-                row_values[field] = value
+        if not bed_digits and not row_values:
+            continue
 
         has_patient_id = bool(row_values.get("patient_id", "").strip())
         has_core_fields = any(row_values.get(field, "").strip() for field in ("diagnosis", "status", "supports"))

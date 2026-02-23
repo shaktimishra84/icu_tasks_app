@@ -47,6 +47,47 @@ class ExtractorBedTableParsingTests(unittest.TestCase):
         self.assertEqual(table_index, 1)
         self.assertEqual(len(parsed), 2)
 
+    def test_parses_header_with_leading_serial_column(self) -> None:
+        header_with_serial = [
+            "Sr No",
+            "ICU Bed",
+            "UHID",
+            "Working Diagnosis",
+            "Clinical Status",
+            "Organ supports",
+            "New problems",
+            "Interventions done",
+            "Next 12 h plan",
+            "Pending tests",
+            "Labs/Imaging",
+        ]
+        rows = [
+            header_with_serial,
+            ["1", "4.", "6372223422", "Pneumonia", "SICK", "O2", "", "", "Repeat ABG", "HRCT pending", "K 2.26"],
+            ["2", "17.", "9937160805", "Dx B", "CRITICAL", "MV", "", "", "", "EEG report", "Na 132"],
+        ]
+        parsed, warnings = _parse_bed_table(rows)
+        self.assertFalse(warnings)
+        self.assertEqual(len(parsed), 2)
+        self.assertEqual(parsed[0]["bed"], "4")
+        self.assertEqual(parsed[0]["patient_id"], "6372223422")
+        self.assertEqual(parsed[1]["bed"], "17")
+        self.assertEqual(parsed[1]["patient_id"], "9937160805")
+
+    def test_continuation_rows_append_fields(self) -> None:
+        rows = [
+            HEADER,
+            ["18", "9668499624", "Old CVA", "SICK", "", "", "", "", "", ""],
+            ["", "", "", "", "", "Pressure sore grade 4", "Debridement day 9", "", "Sodium report", "HypoNa"],
+        ]
+        parsed, _warnings = _parse_bed_table(rows)
+        self.assertEqual(len(parsed), 1)
+        record = parsed[0]
+        self.assertEqual(record["bed"], "18")
+        self.assertEqual(record["patient_id"], "9668499624")
+        self.assertIn("Pressure sore", record["new_issues"])
+        self.assertIn("Debridement", record["actions_done"])
+
 
 if __name__ == "__main__":
     unittest.main()
