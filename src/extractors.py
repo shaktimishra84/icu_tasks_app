@@ -233,6 +233,17 @@ def _patient_key(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
 
 
+def _is_plausible_patient_id(value: str) -> bool:
+    cleaned = re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+    if not cleaned:
+        return False
+    if cleaned.isdigit():
+        return len(cleaned) >= 6
+    if any(char.isalpha() for char in cleaned):
+        return len(cleaned) >= 4
+    return len(cleaned) >= 6
+
+
 def _append_record_value(record: dict[str, str], field: str, value: str) -> None:
     cleaned = value.strip()
     if not cleaned or _is_template_value(cleaned):
@@ -247,81 +258,8 @@ def _append_record_value(record: dict[str, str], field: str, value: str) -> None
     record[field] = f"{existing} | {cleaned}"
 
 
-def _parse_bed_table(rows_as_cells: list[list[str]]) -> tuple[list[dict[str, str]], list[str]]:
+def _dedupe_parsed_rows(parsed_rows: list[dict[str, str]]) -> tuple[list[dict[str, str]], list[str]]:
     warnings: list[str] = []
-    best_header_index: int | None = None
-    best_header_map: dict[str, int] | None = None
-    best_score = -1
-    for index, cells in enumerate(rows_as_cells):
-        header_map = _match_header_columns(cells)
-        if header_map is None:
-            continue
-        score = len(header_map)
-        if score > best_score:
-            best_score = score
-            best_header_index = index
-            best_header_map = header_map
-
-    if best_header_index is None or best_header_map is None:
-        return [], warnings
-
-    parsed_rows: list[dict[str, str]] = []
-    current_record: dict[str, str] | None = None
-
-    for cells in rows_as_cells[best_header_index + 1 :]:
-        if _is_header_like_row(cells, best_header_map):
-            continue
-
-        bed_cell = _cell_at(cells, best_header_map.get("bed"))
-        bed_digits = _extract_bed_digits(bed_cell)
-        row_values = _extract_row_values(cells, best_header_map)
-
-        if not bed_digits and not row_values:
-            continue
-
-        has_patient_id = bool(row_values.get("patient_id", "").strip())
-        has_core_fields = any(row_values.get(field, "").strip() for field in ("diagnosis", "status", "supports"))
-
-        if bed_digits:
-            if current_record is None:
-                current_record = {field: "" for field in DOCX_REQUIRED_FIELDS}
-                current_record["bed"] = bed_digits
-                for field, value in row_values.items():
-                    _append_record_value(current_record, field, value)
-                continue
-
-            current_bed = str(current_record.get("bed", "")).strip()
-            if bed_digits == current_bed and not has_patient_id:
-                for field, value in row_values.items():
-                    _append_record_value(current_record, field, value)
-                continue
-
-            if bed_digits != current_bed and not has_patient_id and not has_core_fields:
-                # Ambiguous numeric marker in bed cell (often template/merged artifact): keep as continuation.
-                for field, value in row_values.items():
-                    _append_record_value(current_record, field, value)
-                continue
-
-            if current_record.get("bed"):
-                parsed_rows.append(current_record)
-
-            current_record = {field: "" for field in DOCX_REQUIRED_FIELDS}
-            current_record["bed"] = bed_digits
-            for field, value in row_values.items():
-                _append_record_value(current_record, field, value)
-            continue
-
-        if current_record is None:
-            continue
-        for field, value in row_values.items():
-            _append_record_value(current_record, field, value)
-
-    if current_record is not None and current_record.get("bed"):
-        parsed_rows.append(current_record)
-
-    if not parsed_rows:
-        return [], warnings
-
     deduped_rows: list[dict[str, str]] = []
     seen_patient_ids: dict[str, int] = {}
     for row in parsed_rows:
@@ -354,6 +292,138 @@ def _parse_bed_table(rows_as_cells: list[list[str]]) -> tuple[list[dict[str, str
     return deduped_rows, warnings
 
 
+def _parse_rows_with_header_map(
+    rows_as_cells: list[list[str]],
+    header_map: dict[str, int],
+    start_index: int = 0,
+) -> tuple[list[dict[str, str]], list[str]]:
+    parsed_rows: list[dict[str, str]] = []
+    current_record: dict[str, str] | None = None
+
+    for cells in rows_as_cells[start_index:]:
+        if _is_header_like_row(cells, header_map):
+            continue
+
+        bed_cell = _cell_at(cells, header_map.get("bed"))
+        bed_digits = _extract_bed_digits(bed_cell)
+        row_values = _extract_row_values(cells, header_map)
+
+        if not bed_digits and not row_values:
+            continue
+
+        has_patient_id = bool(row_values.get("patient_id", "").strip())
+        has_core_fields = any(row_values.get(field, "").strip() for field in ("diagnosis", "status", "supports"))
+
+        if bed_digits:
+            if current_record is None:
+                current_record = {field: "" for field in DOCX_REQUIRED_FIELDS}
+                current_record["bed"] = bed_digits
+                for field, value in row_values.items():
+                    _append_record_value(current_record, field, value)
+                continue
+
+            current_bed = str(current_record.get("bed", "")).strip()
+            if bed_digits == current_bed and not has_patient_id:
+                for field, value in row_values.items():
+                    _append_record_value(current_record, field, value)
+                continue
+
+            if bed_digits != current_bed and not has_patient_id and not has_core_fields:
+                for field, value in row_values.items():
+                    _append_record_value(current_record, field, value)
+                continue
+
+            if current_record.get("bed"):
+                parsed_rows.append(current_record)
+
+            current_record = {field: "" for field in DOCX_REQUIRED_FIELDS}
+            current_record["bed"] = bed_digits
+            for field, value in row_values.items():
+                _append_record_value(current_record, field, value)
+            continue
+
+        if current_record is None:
+            continue
+        for field, value in row_values.items():
+            _append_record_value(current_record, field, value)
+
+    if current_record is not None and current_record.get("bed"):
+        parsed_rows.append(current_record)
+
+    if not parsed_rows:
+        return [], []
+    return _dedupe_parsed_rows(parsed_rows)
+
+
+def _fallback_header_maps(rows_as_cells: list[list[str]]) -> list[dict[str, int]]:
+    if not rows_as_cells:
+        return []
+    max_columns = max(len(row) for row in rows_as_cells)
+    maps: list[dict[str, int]] = []
+    for offset in (0, 1, 2):
+        field_map: dict[str, int] = {}
+        for idx, field in enumerate(DOCX_HEADER_SEQUENCE):
+            column_index = idx + offset
+            if column_index < max_columns:
+                field_map[field] = column_index
+        if {"bed", "patient_id", "diagnosis"}.issubset(field_map):
+            maps.append(field_map)
+    return maps
+
+
+def _parse_bed_table(rows_as_cells: list[list[str]]) -> tuple[list[dict[str, str]], list[str]]:
+    warnings: list[str] = []
+    best_header_index: int | None = None
+    best_header_map: dict[str, int] | None = None
+    best_score = -1
+    for index, cells in enumerate(rows_as_cells):
+        header_map = _match_header_columns(cells)
+        if header_map is None:
+            continue
+        score = len(header_map)
+        if score > best_score:
+            best_score = score
+            best_header_index = index
+            best_header_map = header_map
+
+    if best_header_index is not None and best_header_map is not None:
+        parsed_rows, warnings = _parse_rows_with_header_map(
+            rows_as_cells=rows_as_cells,
+            header_map=best_header_map,
+            start_index=best_header_index + 1,
+        )
+        if parsed_rows:
+            return parsed_rows, warnings
+
+    fallback_best_rows: list[dict[str, str]] = []
+    fallback_best_warnings: list[str] = []
+    fallback_best_score = -1
+    for fallback_map in _fallback_header_maps(rows_as_cells):
+        parsed_rows, fallback_warnings = _parse_rows_with_header_map(
+            rows_as_cells=rows_as_cells,
+            header_map=fallback_map,
+            start_index=0,
+        )
+        if not parsed_rows:
+            continue
+        plausible_pid = sum(
+            1 for row in parsed_rows if _is_plausible_patient_id(str(row.get("patient_id", "")))
+        )
+        any_pid = sum(1 for row in parsed_rows if str(row.get("patient_id", "")).strip())
+        score = (plausible_pid * 1000) + (any_pid * 20) + len(parsed_rows)
+        if score > fallback_best_score:
+            fallback_best_score = score
+            fallback_best_rows = parsed_rows
+            fallback_best_warnings = fallback_warnings
+
+    if fallback_best_rows:
+        warnings = list(fallback_best_warnings)
+        warnings.append("Header row not confidently detected; used positional fallback parsing.")
+        return fallback_best_rows, warnings
+
+    return [], warnings
+
+
 def _select_best_table_rows(
     table_rows_collection: list[list[list[str]]],
 ) -> tuple[list[dict[str, str]], int | None, list[str]]:
@@ -367,8 +437,11 @@ def _select_best_table_rows(
         if not parsed_rows:
             continue
 
-        patient_id_count = sum(1 for row in parsed_rows if str(row.get("patient_id", "")).strip())
-        score = (patient_id_count * 100) + len(parsed_rows)
+        plausible_pid = sum(
+            1 for row in parsed_rows if _is_plausible_patient_id(str(row.get("patient_id", "")))
+        )
+        any_pid = sum(1 for row in parsed_rows if str(row.get("patient_id", "")).strip())
+        score = (plausible_pid * 1000) + (any_pid * 20) + len(parsed_rows)
         if score > best_score:
             best_score = score
             best_rows = parsed_rows

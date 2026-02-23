@@ -88,6 +88,32 @@ class ExtractorBedTableParsingTests(unittest.TestCase):
         self.assertIn("Pressure sore", record["new_issues"])
         self.assertIn("Debridement", record["actions_done"])
 
+    def test_fallback_parses_no_header_rows_default_offset(self) -> None:
+        rows = [
+            ["1", "9178556677", "Seizure disorder", "SICK", "O2", "", "", "", "Psych consult pending", "K 4.2"],
+            ["2", "9668499624", "Old CVA", "SICK", "", "", "", "", "EEG report", "Na 128"],
+        ]
+        parsed, warnings = _parse_bed_table(rows)
+        self.assertEqual(len(parsed), 2)
+        self.assertEqual(parsed[0]["bed"], "1")
+        self.assertEqual(parsed[0]["patient_id"], "9178556677")
+        self.assertEqual(parsed[1]["bed"], "2")
+        self.assertEqual(parsed[1]["patient_id"], "9668499624")
+        self.assertTrue(any("fallback" in item.lower() for item in warnings))
+
+    def test_fallback_parses_no_header_rows_serial_offset(self) -> None:
+        rows = [
+            ["1", "25.", "9178556677", "Seizure disorder", "SICK", "O2", "", "", "", "Psych consult", "K 4.2"],
+            ["2", "26.", "9124061892", "CAP/PTB", "SICK", "O2", "", "", "", "CT chest", "Cr 1.1"],
+        ]
+        parsed, warnings = _parse_bed_table(rows)
+        self.assertEqual(len(parsed), 2)
+        self.assertEqual(parsed[0]["bed"], "25")
+        self.assertEqual(parsed[0]["patient_id"], "9178556677")
+        self.assertEqual(parsed[1]["bed"], "26")
+        self.assertEqual(parsed[1]["patient_id"], "9124061892")
+        self.assertTrue(any("fallback" in item.lower() for item in warnings))
+
 
 if __name__ == "__main__":
     unittest.main()
