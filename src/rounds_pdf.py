@@ -159,8 +159,11 @@ def _missing_category_items(row: dict[str, Any], field_name: str, max_items: int
 
 def _split_items(text: str, max_items: int = 2) -> list[str]:
     parts: list[str] = []
-    for chunk in re.split(r"\n|;|\|", str(text or "")):
+    raw_text = str(text or "").replace("\r", "\n")
+    raw_text = re.sub(r"(?:(?<=^)|(?<=\s))\d+[.)](?=\s*[A-Za-z])", "\n", raw_text)
+    for chunk in re.split(r"\n|;|\|", raw_text):
         cleaned = re.sub(r"^[\-\*\u2022]+\s*", "", chunk).strip()
+        cleaned = re.sub(r"^\d+[.)]\s*", "", cleaned).strip()
         if not cleaned:
             continue
         if cleaned.lower() in {"-", "none", "nil", "na", "n/a"}:
@@ -179,6 +182,17 @@ def _care_check_items(row: dict[str, Any], max_items: int = 2) -> list[str]:
     parsed = _parse_missing_items(str(row.get("Care checks (deterministic)", "")))
     parsed.sort(key=lambda item: (_priority_rank(item[0]), item[1].lower()))
     return [name for _priority, name in parsed][:max_items]
+
+
+def _source_highlights(row: dict[str, Any], max_items: int = 4) -> list[str]:
+    source_text = " | ".join(
+        [
+            str(row.get("_raw_plan_next_12h", "")),
+            str(row.get("_raw_actions_done", "")),
+            str(row.get("_raw_new_issues", "")),
+        ]
+    )
+    return _split_items(source_text, max_items=max_items)
 
 
 def _support_badges(row: dict[str, Any]) -> list[str]:
@@ -230,16 +244,17 @@ def _safe_line(text: str) -> str:
     return escape(_normalize_text(text))
 
 
-def _card_table(row: dict[str, Any], width: float, styles: dict[str, Any]) -> Table:
+def _card_table(row: dict[str, Any], width: float, styles: dict[str, Any], detail_level: str = "max") -> Table:
     status = _status_group_for_pdf(row)
+    max_detail = str(detail_level).lower() == "max"
     bed = _normalize_text(row.get("Bed", ""))
     patient_id = _normalize_text(row.get("Patient ID", ""))
-    diagnosis = _shorten(str(row.get("Diagnosis", "")), 90)
+    diagnosis = _shorten(str(row.get("Diagnosis", "")), 140 if max_detail else 90)
     system = _normalize_text(row.get("System tag", ""))
     matched = _normalize_text(row.get("Matched algorithms", ""))
     trend = _normalize_text(row.get("Round trend", ""))
     trend_reason = _shorten(_normalize_text(row.get("Deterioration reasons", "")), 50)
-    key_labs = _shorten(_normalize_text(row.get("Key labs/imaging (1 line)", "")) or "-", 110)
+    key_labs = _shorten(_normalize_text(row.get("Key labs/imaging (1 line)", "")) or "-", 180 if max_detail else 110)
 
     badges = _support_badges(row)
     badge_text = " ".join(f"[{badge}]" for badge in badges) if badges else ""
@@ -264,11 +279,13 @@ def _card_table(row: dict[str, Any], width: float, styles: dict[str, Any]) -> Ta
     ]
 
     if status != "DECEASED":
-        missing_tests = _missing_category_items(row, "Missing Tests", max_items=2)
-        missing_imaging = _missing_category_items(row, "Missing Imaging", max_items=2)
-        missing_consults = _missing_category_items(row, "Missing Consults", max_items=2)
-        care_checks = _care_check_items(row, max_items=2)
-        pending = _pending_items(row, max_items=2)
+        max_items = 4 if max_detail else 2
+        missing_tests = _missing_category_items(row, "Missing Tests", max_items=max_items)
+        missing_imaging = _missing_category_items(row, "Missing Imaging", max_items=max_items)
+        missing_consults = _missing_category_items(row, "Missing Consults", max_items=max_items)
+        care_checks = _care_check_items(row, max_items=max_items)
+        pending = _pending_items(row, max_items=max_items)
+        source_highlights = _source_highlights(row, max_items=max_items)
 
         if missing_tests or missing_imaging or missing_consults:
             flowables.append(Paragraph("A) Missing (High priority first)", styles["section"]))
@@ -284,8 +301,12 @@ def _card_table(row: dict[str, Any], width: float, styles: dict[str, Any]) -> Ta
             flowables.append(Paragraph(escape("; ".join(care_checks)), styles["line"]))
 
         if pending:
-            flowables.append(Paragraph("C) Pending (verbatim)", styles["section"]))
+            flowables.append(Paragraph("C) Pending (source cleaned)", styles["section"]))
             flowables.append(Paragraph(escape("; ".join(pending)), styles["line"]))
+
+        if source_highlights:
+            flowables.append(Paragraph("D) Source highlights (plan/actions/issues)", styles["section"]))
+            flowables.append(Paragraph(escape("; ".join(source_highlights)), styles["line"]))
 
     flowables.append(Paragraph(f"<font color='#334155'>Key labs/imaging: {escape(key_labs)}</font>", styles["footer"]))
 
@@ -313,6 +334,7 @@ def _card_table(row: dict[str, Any], width: float, styles: dict[str, Any]) -> Ta
 def generate_rounds_pdf(
     rows: list[dict[str, Any]],
     shift: str,
+    detail_level: str = "max",
     run_date: date | None = None,
     output_dir: Path = OUTPUT_DIR,
 ) -> tuple[bytes, Path]:
@@ -400,25 +422,26 @@ def generate_rounds_pdf(
     story.append(
         Paragraph(
             f"Total beds: {len(sorted_rows)} | CRITICAL: {critical_count} | MV: {mv_count} | "
-            f"Vasopressor: {vaso_count} | Pending reports: {pending_count}",
+            f"Vasopressor: {vaso_count} | Pending reports: {pending_count} | PDF detail: {detail_level.upper()}",
             styles["meta_top"],
         )
     )
 
+    cards_per_page = 2 if str(detail_level).lower() == "max" else CARDS_PER_PAGE
     for index, row in enumerate(sorted_rows):
-        if index and index % CARDS_PER_PAGE == 0:
+        if index and index % cards_per_page == 0:
             story.append(PageBreak())
             story.append(Paragraph(f"ICU Rounds - {use_date.isoformat()} - {normalized_shift}", styles["title"]))
             story.append(
                 Paragraph(
                     f"Total beds: {len(sorted_rows)} | CRITICAL: {critical_count} | MV: {mv_count} | "
-                    f"Vasopressor: {vaso_count} | Pending reports: {pending_count}",
+                    f"Vasopressor: {vaso_count} | Pending reports: {pending_count} | PDF detail: {detail_level.upper()}",
                     styles["meta_top"],
                 )
             )
 
-        story.append(_card_table(row, doc.width, styles))
-        if (index + 1) % CARDS_PER_PAGE != 0:
+        story.append(_card_table(row, doc.width, styles, detail_level=detail_level))
+        if (index + 1) % cards_per_page != 0:
             story.append(Spacer(1, 3 * mm))
 
     doc.build(story)

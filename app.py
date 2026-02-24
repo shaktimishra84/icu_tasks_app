@@ -281,8 +281,8 @@ def _decision_labs_line(text: str) -> str:
     ]
     selected = [part for part in parts if any(keyword in part.lower() for keyword in decision_keywords)]
     if selected:
-        return " | ".join(selected[:3])
-    return parts[0]
+        return " | ".join(selected[:4])
+    return " | ".join(parts[:2]) if len(parts) > 1 else parts[0]
 
 
 def _inject_dashboard_theme() -> None:
@@ -756,7 +756,7 @@ def _render_bed_card(
             st.markdown("**Care checks:**")
             _render_safe_items(record.get("_covered_care_checks", ""), max_items=6)
 
-        st.markdown("**C) Pending (verbatim)**")
+        st.markdown("**C) Pending (source cleaned)**")
         _render_safe_items(record.get("Pending (verbatim)", ""), max_items=6)
         unresolved_pending = str(record.get("_unresolved_pending", "")).strip()
         if unresolved_pending:
@@ -833,8 +833,11 @@ def _bed_sort_key(record: dict[str, Any]) -> tuple[tuple[int, int | str], str]:
 def _split_display_items(text: Any) -> list[str]:
     values: list[str] = []
     seen: set[str] = set()
-    for chunk in re.split(r"\n|;|\s\|\s", str(text or "")):
+    raw_text = str(text or "").replace("\r", "\n")
+    raw_text = re.sub(r"(?:(?<=^)|(?<=\s))\d+[.)](?=\s*[A-Za-z])", "\n", raw_text)
+    for chunk in re.split(r"\n|;|\s\|\s", raw_text):
         cleaned = re.sub(r"^[\-\*\u2022]+\s*", "", chunk).strip()
+        cleaned = re.sub(r"^\d+[.)]\s*", "", cleaned).strip()
         if not cleaned:
             continue
         if cleaned.lower() in {"-", "none", "nil", "na", "n/a"}:
@@ -1867,6 +1870,14 @@ def _render_all_beds_panel(
         horizontal=True,
         key=f"rounds_shift_{key_prefix}",
     )
+    pdf_detail_mode = st.radio(
+        "PDF detail level",
+        options=["Max info", "Compact"],
+        index=0,
+        horizontal=True,
+        key=f"rounds_pdf_detail_{key_prefix}",
+    )
+    pdf_detail_value = "max" if pdf_detail_mode == "Max info" else "compact"
 
     st.markdown("### Rounds PDF")
     pdf_bytes_key = f"rounds_pdf_bytes_{key_prefix}"
@@ -1878,7 +1889,11 @@ def _render_all_beds_panel(
         disabled=has_discrepancy,
     ):
         try:
-            pdf_bytes, pdf_path = generate_rounds_pdf(all_beds_output, shift=rounds_shift)
+            pdf_bytes, pdf_path = generate_rounds_pdf(
+                all_beds_output,
+                shift=rounds_shift,
+                detail_level=pdf_detail_value,
+            )
         except RuntimeError as error:
             st.error(f"Rounds PDF generation failed: {error}")
         except Exception as error:

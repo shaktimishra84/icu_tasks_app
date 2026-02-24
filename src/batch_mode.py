@@ -694,6 +694,10 @@ def build_all_beds_outputs(table_rows: list[dict[str, str]]) -> list[dict[str, A
                 "_covered_care_checks": _format_category(present, "care_checks"),
                 "_dama_risk": dama_risk,
                 "_is_deteriorated": False,
+                "_raw_actions_done": str(row.get("actions_done", "")).strip(),
+                "_raw_plan_next_12h": str(row.get("plan_next_12h", "")).strip(),
+                "_raw_pending": str(row.get("pending", "")).strip(),
+                "_raw_key_labs_imaging": str(row.get("key_labs_imaging", "")).strip(),
             }
         )
     return outputs

@@ -40,6 +40,15 @@ class RoundsPdfRulesTests(unittest.TestCase):
         self.assertEqual(pending[0], "EEG report pending")
         self.assertEqual(pending[1], "CTPA report pending")
 
+    def test_pending_splits_inline_numbered_items(self) -> None:
+        row = {
+            "Pending (verbatim)": "1.PSYCHIATRY CONSULTATION TO BE DONE 2.PLAN CECT ABDOMEN AFTER USG",
+        }
+        pending = _pending_items(row, max_items=4)
+        self.assertGreaterEqual(len(pending), 2)
+        self.assertIn("PSYCHIATRY CONSULTATION TO BE DONE", pending[0])
+        self.assertIn("PLAN CECT ABDOMEN AFTER USG", " | ".join(pending))
+
     def test_other_maps_to_stable(self) -> None:
         row = {"_status_group": "OTHER"}
         self.assertEqual(_status_group_for_pdf(row), "STABLE")
