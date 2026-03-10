@@ -11,14 +11,13 @@ try:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import mm
-    from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 except Exception:
     colors = None
     A4 = None
     ParagraphStyle = None
     getSampleStyleSheet = None
     mm = None
-    PageBreak = None
     Paragraph = None
     SimpleDocTemplate = None
     Spacer = None
@@ -651,28 +650,15 @@ def generate_rounds_pdf(
     )
     story.append(
         Paragraph(
-            "Cards are ordered by usefulness: unstable, new admission, deteriorated, procedure pending, then stable.",
+            "Order: unstable -> new admission -> deteriorated -> procedure pending -> stable",
             styles["subhead"],
         )
     )
 
-    cards_per_page = 3 if simple_mode else 4
     for idx, row in enumerate(sorted_rows):
-        if idx and idx % cards_per_page == 0:
-            story.append(PageBreak())
-            story.append(Paragraph(f"ICU Rounds - {use_date.isoformat()} - {normalized_shift}", styles["title"]))
-            story.append(
-                Paragraph(
-                    (
-                        f"Beds {counts['total']} | Critical {counts['critical']} | MV {counts['mv']} | "
-                        f"Vaso {counts['vaso']} | Pending {counts['pending_reports']}"
-                    ),
-                    styles["subhead"],
-                )
-            )
         story.append(_card_block(row, doc.width, styles))
-        if (idx + 1) % cards_per_page != 0:
-            story.append(Spacer(1, 2.5 * mm))
+        if idx < len(sorted_rows) - 1:
+            story.append(Spacer(1, 1.6 * mm))
 
     doc.build(story)
     return output_path.read_bytes(), output_path
