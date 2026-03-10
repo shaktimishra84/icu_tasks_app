@@ -662,6 +662,361 @@ def _apply_filters(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return [row for row in records if keep(row)]
 
 
+_GENERIC_ACTION_SNIPPETS = [
+    "reassess abcs",
+    "reassess airway",
+    "continue supportive care",
+    "monitor closely",
+    "clinical correlation",
+]
+
+_PROCEDURE_HINTS = [
+    "ugie",
+    "endoscopy",
+    "cect",
+    "ct ",
+    "ctpa",
+    "mri",
+    "hrct",
+    "echo",
+    "tracheostomy",
+    "debridement",
+    "bronchoscopy",
+    "line",
+]
+
+_WATCH_HINTS = [
+    "worsening",
+    "hypotension",
+    "shock",
+    "low gcs",
+    "high peak pressure",
+    "rising",
+    "drop",
+    "decline",
+    "seizure",
+]
+
+_DISCHARGE_TRANSFER_HINTS = [
+    "for discharge",
+    "discharge planned",
+    "for transfer",
+    "transfer to ward",
+    "shift to ward",
+    "step down",
+]
+
+
+def _normalized_key(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
+
+
+def _priority_rank(priority: str) -> int:
+    return {"high": 0, "medium": 1, "low": 2}.get(priority.lower(), 3)
+
+
+def _is_generic_action(text: str) -> bool:
+    normalized = str(text or "").strip().lower()
+    if not normalized:
+        return True
+    return any(snippet in normalized for snippet in _GENERIC_ACTION_SNIPPETS)
+
+
+def _dedupe_keep_order(items: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        cleaned = str(item or "").strip()
+        if not cleaned:
+            continue
+        key = _normalized_key(cleaned)
+        if not key or key in seen:
+            continue
+        seen.add(key)
+        out.append(cleaned)
+    return out
+
+
+def _split_priority_items(text: Any) -> list[tuple[str, str]]:
+    parsed: list[tuple[str, str]] = []
+    for line in str(text or "").splitlines():
+        cleaned = re.sub(r"^[\-\*\u2022]+\s*", "", line).strip()
+        if not cleaned:
+            continue
+        match = re.match(r"(?i)(high|medium|low)\s*:\s*(.+)", cleaned)
+        if match:
+            priority = match.group(1).title()
+            item = match.group(2).strip()
+        else:
+            priority = "Medium"
+            item = cleaned
+        if item and not _is_generic_action(item):
+            parsed.append((priority, item))
+    parsed.sort(key=lambda pair: (_priority_rank(pair[0]), pair[1].lower()))
+    return parsed
+
+
+def _is_new_admission(record: dict[str, Any]) -> bool:
+    trend = str(record.get("Round trend", "")).strip().upper()
+    if trend == "NEW ADMISSION":
+        return True
+    combined = " ".join(
+        [
+            str(record.get("Diagnosis", "")),
+            str(record.get("_raw_new_issues", "")),
+            str(record.get("_raw_actions_done", "")),
+            str(record.get("_raw_plan_next_12h", "")),
+        ]
+    ).lower()
+    return "new admission" in combined
+
+
+def _is_procedure_patient(record: dict[str, Any]) -> bool:
+    text = " ".join(
+        [
+            str(record.get("_raw_plan_next_12h", "")),
+            str(record.get("Pending (verbatim)", "")),
+            str(record.get("_raw_actions_done", "")),
+        ]
+    ).lower()
+    return any(hint in text for hint in _PROCEDURE_HINTS)
+
+
+def _is_discharge_transfer_candidate(record: dict[str, Any]) -> bool:
+    text = " ".join(
+        [
+            str(record.get("Status", "")),
+            str(record.get("Diagnosis", "")),
+            str(record.get("_raw_plan_next_12h", "")),
+        ]
+    ).lower()
+    return any(hint in text for hint in _DISCHARGE_TRANSFER_HINTS)
+
+
+def _is_closed_case(record: dict[str, Any]) -> bool:
+    if str(record.get("_status_group", "")).upper() == "DECEASED":
+        return True
+    flags = [str(flag).lower() for flag in (record.get("_flags", []) or [])]
+    if any("dama" in flag for flag in flags):
+        return True
+    return _is_discharge_transfer_candidate(record)
+
+
+def _collect_now_items(record: dict[str, Any], max_items: int = 3) -> list[str]:
+    items: list[str] = []
+    trend = str(record.get("Round trend", "")).strip()
+    deteriorated_reason = str(record.get("Deterioration reasons", "")).strip()
+    tracker_lines = [str(line).strip() for line in (record.get("_tracker_summary_lines", []) or []) if str(line).strip()]
+    new_issues = _split_display_items(record.get("_raw_new_issues", ""))
+    actions_done = _split_display_items(record.get("_raw_actions_done", ""))
+
+    if _is_new_admission(record):
+        items.append("New admission")
+    if str(record.get("Deterioration since last round", "")).upper() == "YES":
+        if deteriorated_reason:
+            items.append(f"Deteriorated: {deteriorated_reason}")
+        else:
+            items.append("Deteriorated since previous round")
+    elif trend and trend.upper() not in {"STABLE", "NEW ADMISSION"}:
+        items.append(f"Trend: {trend}")
+
+    items.extend(new_issues[:2])
+    items.extend(actions_done[:1])
+    items.extend(tracker_lines[:2])
+    filtered = [item for item in _dedupe_keep_order(items) if not _is_generic_action(item)]
+    return filtered[:max_items]
+
+
+def _collect_pending_items(record: dict[str, Any], max_items: int = 3) -> list[str]:
+    pending = _split_display_items(record.get("Pending (verbatim)", ""))
+    unresolved = _split_display_items(record.get("_unresolved_pending", ""))
+    merged = _dedupe_keep_order(pending + unresolved)
+    return merged[:max_items]
+
+
+def _collect_today_items(record: dict[str, Any], max_items: int = 3) -> list[str]:
+    tasks: list[str] = []
+    plan_items = _split_display_items(record.get("_raw_plan_next_12h", ""))
+    tasks.extend([item for item in plan_items if not _is_generic_action(item)])
+
+    missing_fields = [
+        "Missing Tests",
+        "Missing Imaging",
+        "Missing Consults",
+        "Care checks (deterministic)",
+    ]
+    for field_name in missing_fields:
+        for priority, item in _split_priority_items(record.get(field_name, "")):
+            tasks.append(f"{priority}: {item}")
+
+    pending_keys = {_normalized_key(item) for item in _collect_pending_items(record, max_items=20)}
+    filtered: list[str] = []
+    for item in _dedupe_keep_order(tasks):
+        key = _normalized_key(item)
+        key_without_priority = _normalized_key(re.sub(r"^(high|medium|low)\s*:\s*", "", item, flags=re.IGNORECASE))
+        if key in pending_keys or key_without_priority in pending_keys:
+            continue
+        filtered.append(item)
+    return filtered[:max_items]
+
+
+def _collect_watch_items(record: dict[str, Any], max_items: int = 2) -> list[str]:
+    watch: list[str] = []
+    reasons = _split_display_items(record.get("Deterioration reasons", ""))
+    for reason in reasons:
+        watch.append(reason)
+
+    flags = [str(flag).strip() for flag in (record.get("_flags", []) or []) if str(flag).strip()]
+    watch.extend(flags)
+
+    new_issues = _split_display_items(record.get("_raw_new_issues", ""))
+    for issue in new_issues:
+        if any(hint in issue.lower() for hint in _WATCH_HINTS):
+            watch.append(issue)
+
+    key_labs = _split_display_items(record.get("Key labs/imaging (1 line)", ""))
+    for lab in key_labs:
+        lower_lab = lab.lower()
+        if any(hint in lower_lab for hint in ["lactate", "creat", "potassium", "sodium", "platelet", "abg"]):
+            watch.append(lab)
+    return _dedupe_keep_order(watch)[:max_items]
+
+
+def _triage_rank(record: dict[str, Any]) -> int:
+    status_group = str(record.get("_status_group", "OTHER")).upper()
+    if _is_closed_case(record):
+        return 5
+    if status_group == "CRITICAL" or bool(record.get("_is_mv")) or bool(record.get("_is_vaso")):
+        return 0
+    if _is_new_admission(record):
+        return 1
+    if str(record.get("Deterioration since last round", "")).upper() == "YES":
+        return 2
+    if _is_procedure_patient(record):
+        return 3
+    return 4
+
+
+def _triage_bucket(record: dict[str, Any]) -> str:
+    rank = _triage_rank(record)
+    if rank == 5:
+        return "CLOSED"
+    if rank <= 2:
+        return "RED"
+    if rank == 3:
+        return "AMBER"
+    return "GREEN"
+
+
+def _triage_sort_key(record: dict[str, Any]) -> tuple[int, int, tuple[int, int | str], str]:
+    status_order = {"CRITICAL": 0, "SICK": 1, "SERIOUS": 2, "OTHER": 3, "DECEASED": 4}
+    status_group = str(record.get("_status_group", "OTHER")).upper()
+    return (
+        _triage_rank(record),
+        status_order.get(status_group, 9),
+        _bed_sort_value(record.get("Bed", "")),
+        str(record.get("Patient ID", "")),
+    )
+
+
+def _acuity_label(record: dict[str, Any]) -> str:
+    bucket = _triage_bucket(record)
+    if bucket == "RED":
+        return "Red"
+    if bucket == "AMBER":
+        return "Amber"
+    if bucket == "GREEN":
+        return "Green"
+    return "Grey"
+
+
+def _supports_schema(record: dict[str, Any]) -> str:
+    supports: list[str] = []
+    if bool(record.get("_is_mv")):
+        supports.append("MV")
+    if bool(record.get("_is_niv")):
+        supports.append("NIV")
+    if bool(record.get("_is_vaso")):
+        supports.append("Vasopressor")
+    if bool(record.get("_is_rrt")):
+        supports.append("Dialysis")
+    if not supports:
+        return "-"
+    return " / ".join(supports)
+
+
+def _change_since_round(record: dict[str, Any]) -> str:
+    status_group = str(record.get("_status_group", "")).upper()
+    if status_group == "DECEASED":
+        return "Declared deceased"
+    if _is_new_admission(record):
+        return "New admission"
+    if str(record.get("Deterioration since last round", "")).upper() == "YES":
+        reason = str(record.get("Deterioration reasons", "")).strip()
+        return f"Deteriorated: {reason}" if reason else "Deteriorated"
+    trend = str(record.get("Round trend", "")).strip()
+    if trend and trend.upper() not in {"STABLE", "NEW ADMISSION"}:
+        return trend
+    now_items = _collect_now_items(record, max_items=1)
+    return now_items[0] if now_items else "No major change"
+
+
+def _must_do_line(record: dict[str, Any]) -> str:
+    if str(record.get("_status_group", "")).upper() == "DECEASED":
+        return "-"
+    tasks = _collect_today_items(record, max_items=2)
+    return " | ".join(tasks) if tasks else "-"
+
+
+def _pending_line(record: dict[str, Any]) -> str:
+    pending = _collect_pending_items(record, max_items=2)
+    return " | ".join(pending) if pending else "-"
+
+
+def _abnormal_lab_item(item: str) -> bool:
+    text = str(item or "").strip()
+    if not text:
+        return False
+    lower = text.lower()
+    if any(token in lower for token in ["high", "low", "critical", "elevated", "abnormal", "pending", "report"]):
+        return True
+
+    checks: list[tuple[re.Pattern[str], float, float]] = [
+        (re.compile(r"\b(?:k|potassium)\s*[-:=]?\s*(\d+(?:\.\d+)?)", re.IGNORECASE), 3.5, 5.3),
+        (re.compile(r"\b(?:na|sodium)\s*[-:=]?\s*(\d+(?:\.\d+)?)", re.IGNORECASE), 130.0, 150.0),
+        (re.compile(r"\b(?:creat(?:inine)?)\s*[-:=]?\s*(\d+(?:\.\d+)?)", re.IGNORECASE), 0.0, 1.5),
+        (re.compile(r"\blactate\s*[-:=]?\s*(\d+(?:\.\d+)?)", re.IGNORECASE), 0.0, 2.0),
+        (re.compile(r"\b(?:tlc|wbc)\s*[-:=]?\s*(\d+(?:\.\d+)?)", re.IGNORECASE), 4.0, 12.0),
+    ]
+    for pattern, min_ok, max_ok in checks:
+        match = pattern.search(text)
+        if not match:
+            continue
+        value = float(match.group(1))
+        return value < min_ok or value > max_ok
+
+    return any(token in lower for token in ["abg", "ct", "mri", "ctpa", "hrct", "echo"])
+
+
+def _key_labs_top3(record: dict[str, Any]) -> str:
+    raw = str(record.get("Key labs/imaging (1 line)", "")).strip()
+    if not raw:
+        return "-"
+    parts = _split_display_items(raw)
+    abnormal = [part for part in parts if _abnormal_lab_item(part)]
+    selected = abnormal[:3]
+    if not selected:
+        return "-"
+    return " | ".join(selected)
+
+
+def _escalation_trigger(record: dict[str, Any]) -> str:
+    if str(record.get("_status_group", "")).upper() == "DECEASED":
+        return "-"
+    watch = _collect_watch_items(record, max_items=1)
+    return watch[0] if watch else "-"
+
+
 def _render_bed_card(
     record: dict[str, Any],
     *,
@@ -683,98 +1038,42 @@ def _render_bed_card(
         patient_key: str,
         status_group: str,
     ) -> None:
-        flags = record.get("_flags", [])
-        severity = str(record.get("_flag_severity", "NONE"))
-        trend = str(record.get("Round trend", "")).strip()
-        deterioration_reason = str(record.get("Deterioration reasons", "")).strip()
-        is_deteriorated = str(record.get("Deterioration since last round", "")).upper() == "YES"
-        system_tags = [str(x) for x in (record.get("_system_tags", []) or [])]
-        matched_algorithms = [str(x) for x in (record.get("_matched_algorithms", []) or [])]
-        tracker_summary_lines = [str(item) for item in (record.get("_tracker_summary_lines", []) or [])]
+        acuity = _acuity_label(record)
+        diagnosis = _short_text(record.get("Diagnosis", "-"), limit=95) or "-"
+        supports = _supports_schema(record)
+        change = _change_since_round(record)
+        must_do = _must_do_line(record)
+        pending = _pending_line(record)
+        key_labs = _key_labs_top3(record)
+        escalation = _escalation_trigger(record)
 
-        if is_deteriorated:
+        def _schema_line(label: str, value: str) -> None:
             st.markdown(
-                f"<div style='font-weight:700;color:#b91c1c;margin-bottom:4px;'>"
-                f"Deteriorated since last round"
-                f"{': ' + escape(deterioration_reason) if deterioration_reason else ''}</div>",
-                unsafe_allow_html=True,
-            )
-        elif trend:
-            st.caption(f"Trend vs previous round: {trend}")
-        if tracker_summary_lines:
-            st.markdown("**Change summary (vs previous round):**")
-            for line in tracker_summary_lines[:4]:
-                st.markdown(f"- {line}")
-
-        if flags:
-            color = "#b91c1c" if severity == "RED" else "#b45309"
-            st.markdown(
-                f"<div style='font-weight:600;color:{color};margin-bottom:4px;'>"
-                f"Flags ({escape(severity)}): {escape(', '.join(flags))}</div>",
+                (
+                    "<div style='font-size:13.5px;line-height:1.3;margin:1px 0;'>"
+                    f"<strong>{escape(label)}:</strong> {escape(value or '-')}</div>"
+                ),
                 unsafe_allow_html=True,
             )
 
-        st.markdown(f"**Diagnosis:** {record.get('Diagnosis', '-') or '-'}")
+        _schema_line("Acuity / Supports", f"{acuity} / {supports}")
+        _schema_line("Diagnosis", diagnosis)
+        _schema_line("Change since last round", change)
+        _schema_line("Must do before evening", must_do)
+        _schema_line("Pending", pending)
+        _schema_line("Key labs (3) / Escalation", f"{key_labs} / {escalation}")
+
         if show_course_button and patient_key:
             if st.button("View course", key=f"view_course_{key_prefix}_{patient_key}"):
                 st.session_state[f"selected_patient_key_{key_prefix}"] = patient_key
                 st.caption("Patient selected for course view and correction.")
-        if system_tags:
-            friendly_system = " | ".join(tag.split("_", 1)[-1].replace("_", " ").upper() for tag in system_tags)
-            matched_text = ", ".join(matched_algorithms) if matched_algorithms else "None"
-            st.markdown(
-                f"<div style='color:#a7bfd7;font-size:12px;'>System: <strong>{escape(friendly_system)}</strong> "
-                f"| Matched: {escape(matched_text)}</div>",
-                unsafe_allow_html=True,
-            )
-
-        if status_group == "DECEASED":
-            st.markdown("**DECEASED**")
-            pending_admin = record.get("Pending (verbatim)", "")
-            if pending_admin:
-                _render_safe_items(pending_admin, max_items=2)
-            return
-
-        st.markdown("**A) Missing (High priority first)**")
-        st.markdown("**Tests:**")
-        _render_safe_items(record.get("Missing Tests", ""), max_items=6)
-        st.markdown("**Imaging:**")
-        _render_safe_items(record.get("Missing Imaging", ""), max_items=6)
-        st.markdown("**Consults:**")
-        _render_safe_items(record.get("Missing Consults", ""), max_items=6)
-        st.markdown("**Care checks (deterministic):**")
-        _render_safe_items(record.get("Care checks (deterministic)", ""), max_items=6)
-
-        if st.session_state.get("show_already_covered", False):
-            st.markdown("**B) Already covered**")
-            st.markdown("**Tests:**")
-            _render_safe_items(record.get("_covered_tests", ""), max_items=6)
-            st.markdown("**Imaging:**")
-            _render_safe_items(record.get("_covered_imaging", ""), max_items=6)
-            st.markdown("**Consults:**")
-            _render_safe_items(record.get("_covered_consults", ""), max_items=6)
-            st.markdown("**Care checks:**")
-            _render_safe_items(record.get("_covered_care_checks", ""), max_items=6)
-
-        st.markdown("**C) Pending (source cleaned)**")
-        _render_safe_items(record.get("Pending (verbatim)", ""), max_items=6)
-        unresolved_pending = str(record.get("_unresolved_pending", "")).strip()
-        if unresolved_pending:
-            st.markdown("**Unresolved pending (carry-forward):**")
-            _render_safe_items(unresolved_pending, max_items=6)
-
-        st.markdown(
-            f"<div class='icu-lab-note'>Key labs/imaging: "
-            f"{escape(_decision_labs_line(str(record.get('Key labs/imaging (1 line)', ''))))}</div>",
-            unsafe_allow_html=True,
-        )
 
     status_group = str(record.get("_status_group", "OTHER"))
     status_color = _status_color(status_group)
     support_badges = _support_badges(record)
     patient_key = str(record.get("_patient_key", "")).strip() or patient_key_from_output_row(record)
     pending_count = len(_split_display_items(record.get("Pending (verbatim)", "")))
-    trend = str(record.get("Round trend", "")).strip() or "NEW/UNCHANGED"
+    must_do_preview = _must_do_line(record)
 
     with st.container(border=True):
         st.markdown(
@@ -791,7 +1090,7 @@ def _render_bed_card(
         if collapsible:
             st.caption(
                 f"Dx: {_short_text(record.get('Diagnosis', '-'), limit=64) or '-'} | "
-                f"Trend: {trend} | Pending: {pending_count}"
+                f"Must do: {_short_text(must_do_preview, limit=52)} | Pending: {pending_count}"
             )
             with st.expander("Open details", expanded=False):
                 _render_bed_card_body(
@@ -1800,7 +2099,7 @@ def _render_all_beds_panel(
     if not all_beds_output:
         return
 
-    all_beds_output = sorted(all_beds_output, key=_bed_sort_key)
+    all_beds_output = sorted(all_beds_output, key=_triage_sort_key)
     _render_summary_tiles(all_beds_output)
     has_discrepancy = _render_discrepancy_audit(source_rows or [], all_beds_output)
 
@@ -1817,33 +2116,45 @@ def _render_all_beds_panel(
         st.caption(f"Deteriorated patients: {deteriorated_count}")
         _render_deterioration_table(all_beds_output)
 
-    show_covered_key = f"show_covered_toggle_{key_prefix}"
-    st.session_state["show_already_covered"] = st.toggle(
-        "Show already covered items",
-        value=st.session_state.get("show_already_covered", False),
-        key=show_covered_key,
-    )
-
     layout_mode = st.radio(
         "Dashboard layout",
         options=["Bed grid", "Detailed list"],
         horizontal=True,
         key=f"dashboard_layout_{key_prefix}",
     )
-
-    filtered_records = sorted(_apply_filters(all_beds_output), key=_bed_sort_key)
+    filtered_records = sorted(_apply_filters(all_beds_output), key=_triage_sort_key)
     st.caption(f"Showing {len(filtered_records)} of {len(all_beds_output)} beds after filters")
     if layout_mode == "Detailed list":
-        st.caption("Detailed list: bed-wise ascending order.")
-        for row in filtered_records:
-            _render_bed_card(
-                row,
-                key_prefix=key_prefix,
-                show_course_button=show_course_button,
-                collapsible=False,
-            )
+        st.caption("Detailed list: triage-first (unstable -> new -> deteriorated -> procedure -> stable).")
+        groups: list[tuple[str, str]] = [
+            ("Immediate review", "RED"),
+            ("Action pending", "AMBER"),
+            ("Stable watch", "GREEN"),
+        ]
+        for title, bucket in groups:
+            section_rows = [row for row in filtered_records if _triage_bucket(row) == bucket]
+            if not section_rows:
+                continue
+            st.markdown(f"### {title}")
+            for row in section_rows:
+                _render_bed_card(
+                    row,
+                    key_prefix=key_prefix,
+                    show_course_button=show_course_button,
+                    collapsible=False,
+                )
+        closed_rows = [row for row in filtered_records if _triage_bucket(row) == "CLOSED"]
+        if closed_rows:
+            st.markdown("### Closed / handover-only")
+            for row in closed_rows:
+                _render_bed_card(
+                    row,
+                    key_prefix=key_prefix,
+                    show_course_button=show_course_button,
+                    collapsible=False,
+                )
     else:
-        st.caption("Bed grid: compact bed-wise cards. Click each card to open full details.")
+        st.caption("Bed grid: triage-first cards. Click each card to open full details.")
         if not filtered_records:
             st.info("No beds match the current filters.")
         else:
@@ -1871,13 +2182,13 @@ def _render_all_beds_panel(
         key=f"rounds_shift_{key_prefix}",
     )
     pdf_detail_mode = st.radio(
-        "PDF detail level",
-        options=["Max info", "Compact"],
+        "PDF format",
+        options=["Simple (recommended)", "Compact"],
         index=0,
         horizontal=True,
         key=f"rounds_pdf_detail_{key_prefix}",
     )
-    pdf_detail_value = "max" if pdf_detail_mode == "Max info" else "compact"
+    pdf_detail_value = "simple" if pdf_detail_mode.startswith("Simple") else "compact"
 
     st.markdown("### Rounds PDF")
     pdf_bytes_key = f"rounds_pdf_bytes_{key_prefix}"
@@ -1907,7 +2218,7 @@ def _render_all_beds_panel(
 
     if st.session_state.get(pdf_bytes_key):
         st.download_button(
-            "Download PDF (bed cards)",
+            "Download PDF (rounds sheet)",
             data=st.session_state[pdf_bytes_key],
             file_name=st.session_state.get(pdf_file_key, "ICU_Rounds.pdf"),
             mime="application/pdf",

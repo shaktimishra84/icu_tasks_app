@@ -195,21 +195,6 @@ def _source_highlights(row: dict[str, Any], max_items: int = 4) -> list[str]:
     return _split_items(source_text, max_items=max_items)
 
 
-def _support_badges(row: dict[str, Any]) -> list[str]:
-    badges: list[str] = []
-    if row.get("_is_mv"):
-        badges.append("MV")
-    if row.get("_is_niv"):
-        badges.append("NIV")
-    if row.get("_is_vaso"):
-        badges.append("VASO")
-    if row.get("_is_rrt"):
-        badges.append("RRT")
-    if row.get("_is_o2"):
-        badges.append("O2")
-    return badges
-
-
 def _build_pending_tracker_rows(rows: list[dict[str, Any]]) -> list[list[str]]:
     """
     Keep deterministic pending extraction available for tests/debug:
@@ -240,95 +225,338 @@ def _status_counts(rows: list[dict[str, Any]]) -> tuple[int, int, int, int]:
     return critical, mv, vaso, pending
 
 
-def _safe_line(text: str) -> str:
-    return escape(_normalize_text(text))
+PROCEDURE_HINTS = [
+    "ugie",
+    "endoscopy",
+    "cect",
+    "ct ",
+    "ctpa",
+    "mri",
+    "hrct",
+    "echo",
+    "tracheostomy",
+    "debridement",
+    "bronchoscopy",
+    "line",
+]
 
 
-def _card_table(row: dict[str, Any], width: float, styles: dict[str, Any], detail_level: str = "max") -> Table:
+def _is_new_admission(row: dict[str, Any]) -> bool:
+    trend = _normalize_text(row.get("Round trend", "")).upper()
+    if trend == "NEW ADMISSION":
+        return True
+    all_text = " ".join(
+        [
+            str(row.get("Diagnosis", "")),
+            str(row.get("_raw_new_issues", "")),
+            str(row.get("_raw_actions_done", "")),
+            str(row.get("_raw_plan_next_12h", "")),
+        ]
+    ).lower()
+    return "new admission" in all_text
+
+
+def _is_procedure_case(row: dict[str, Any]) -> bool:
+    text = " ".join(
+        [
+            str(row.get("_raw_plan_next_12h", "")),
+            str(row.get("Pending (verbatim)", "")),
+            str(row.get("_raw_actions_done", "")),
+        ]
+    ).lower()
+    return any(hint in text for hint in PROCEDURE_HINTS)
+
+
+def _is_closed_case(row: dict[str, Any]) -> bool:
+    if _status_group_for_pdf(row) == "DECEASED":
+        return True
+    flags = [str(flag).lower() for flag in (row.get("_flags", []) or [])]
+    if any("dama" in flag for flag in flags):
+        return True
+    transfer_text = " ".join(
+        [
+            str(row.get("Status", "")),
+            str(row.get("Diagnosis", "")),
+            str(row.get("_raw_plan_next_12h", "")),
+        ]
+    ).lower()
+    return any(token in transfer_text for token in ["for discharge", "for transfer", "step down", "shift to ward"])
+
+
+def _triage_rank(row: dict[str, Any]) -> int:
     status = _status_group_for_pdf(row)
-    max_detail = str(detail_level).lower() == "max"
+    if _is_closed_case(row):
+        return 5
+    if status == "CRITICAL" or bool(row.get("_is_mv")) or bool(row.get("_is_vaso")):
+        return 0
+    if _is_new_admission(row):
+        return 1
+    if str(row.get("Deterioration since last round", "")).strip().upper() == "YES":
+        return 2
+    if _is_procedure_case(row):
+        return 3
+    return 4
+
+
+def _triage_bucket(row: dict[str, Any]) -> str:
+    rank = _triage_rank(row)
+    if rank == 5:
+        return "CLOSED"
+    if rank <= 2:
+        return "RED"
+    if rank == 3:
+        return "AMBER"
+    return "GREEN"
+
+
+def _triage_sort_key(row: dict[str, Any]) -> tuple[int, int, tuple[int, int | str], str]:
+    status_order = {"CRITICAL": 0, "SICK": 1, "SERIOUS": 2, "STABLE": 3, "DECEASED": 4}
+    status = _status_group_for_pdf(row)
+    return (
+        _triage_rank(row),
+        status_order.get(status, 9),
+        _bed_sort_value(row.get("Bed", "")),
+        _normalize_text(row.get("Patient ID", "")),
+    )
+
+
+def _parse_priority_lines(text: Any) -> list[tuple[str, str]]:
+    out: list[tuple[str, str]] = []
+    for line in str(text or "").splitlines():
+        cleaned = re.sub(r"^[\-\*\u2022]+\s*", "", line).strip()
+        if not cleaned:
+            continue
+        match = re.match(r"(?i)(high|medium|low)\s*:\s*(.+)", cleaned)
+        if match:
+            priority = match.group(1).title()
+            item = _normalize_text(match.group(2))
+        else:
+            priority = "Medium"
+            item = _normalize_text(cleaned)
+        if item and not _is_generic_phrase(item):
+            out.append((priority, item))
+    out.sort(key=lambda item: (_priority_rank(item[0]), item[1].lower()))
+    return out
+
+
+def _collect_now(row: dict[str, Any], max_items: int = 2) -> list[str]:
+    items: list[str] = []
+    if _is_new_admission(row):
+        items.append("New admission")
+    if str(row.get("Deterioration since last round", "")).strip().upper() == "YES":
+        reason = _normalize_text(row.get("Deterioration reasons", ""))
+        items.append(f"Deteriorated: {reason}" if reason else "Deteriorated since previous round")
+    items.extend(_split_items(str(row.get("_raw_new_issues", "")), max_items=max_items))
+    if not items:
+        trend = _normalize_text(row.get("Round trend", ""))
+        if trend:
+            items.append(f"Trend: {trend}")
+    return _dedupe(items)[:max_items]
+
+
+def _collect_today(row: dict[str, Any], max_items: int = 3) -> list[str]:
+    plan_items = _split_items(str(row.get("_raw_plan_next_12h", "")), max_items=12)
+    candidate: list[str] = [item for item in plan_items if not _is_generic_phrase(item)]
+    for field_name in ["Missing Tests", "Missing Imaging", "Missing Consults", "Care checks (deterministic)"]:
+        for priority, item in _parse_priority_lines(row.get(field_name, "")):
+            candidate.append(f"{priority}: {item}")
+
+    pending_keys = {_normalized_key(item) for item in _pending_items(row, max_items=30)}
+    clean: list[str] = []
+    for item in _dedupe(candidate):
+        key = _normalized_key(item)
+        key_wo = _normalized_key(re.sub(r"^(high|medium|low)\s*:\s*", "", item, flags=re.IGNORECASE))
+        if key in pending_keys or key_wo in pending_keys:
+            continue
+        clean.append(item)
+    return clean[:max_items]
+
+
+def _collect_watch(row: dict[str, Any], max_items: int = 2) -> list[str]:
+    watch: list[str] = []
+    watch.extend(_split_items(str(row.get("Deterioration reasons", "")), max_items=max_items))
+    flags = [str(flag).strip() for flag in (row.get("_flags", []) or []) if str(flag).strip()]
+    watch.extend(flags)
+    for issue in _split_items(str(row.get("_raw_new_issues", "")), max_items=6):
+        if any(token in issue.lower() for token in ["shock", "hypotension", "peak pressure", "decline", "seizure"]):
+            watch.append(issue)
+    labs = _split_items(str(row.get("Key labs/imaging (1 line)", "")), max_items=6)
+    for lab in labs:
+        if any(token in lab.lower() for token in ["lactate", "creat", "potassium", "sodium", "abg", "platelet"]):
+            watch.append(lab)
+    return _dedupe(watch)[:max_items]
+
+
+def _support_text(row: dict[str, Any]) -> str:
+    supports: list[str] = []
+    if bool(row.get("_is_mv")):
+        supports.append("MV")
+    if bool(row.get("_is_niv")):
+        supports.append("NIV")
+    if bool(row.get("_is_vaso")):
+        supports.append("Vasopressor")
+    if bool(row.get("_is_rrt")):
+        supports.append("Dialysis")
+    return " / ".join(supports) if supports else "-"
+
+
+def _acuity_label(row: dict[str, Any]) -> str:
+    bucket = _triage_bucket(row)
+    if bucket == "RED":
+        return "Red"
+    if bucket == "AMBER":
+        return "Amber"
+    if bucket == "GREEN":
+        return "Green"
+    return "Grey"
+
+
+def _change_line(row: dict[str, Any]) -> str:
+    if _status_group_for_pdf(row) == "DECEASED":
+        return "Declared deceased"
+    if _is_new_admission(row):
+        return "New admission"
+    if str(row.get("Deterioration since last round", "")).strip().upper() == "YES":
+        reason = _normalize_text(row.get("Deterioration reasons", ""))
+        return f"Deteriorated: {reason}" if reason else "Deteriorated"
+    trend = _normalize_text(row.get("Round trend", ""))
+    if trend and trend.upper() not in {"STABLE", "NEW ADMISSION"}:
+        return trend
+    now = _collect_now(row, max_items=1)
+    return now[0] if now else "No major change"
+
+
+def _must_do_line(row: dict[str, Any]) -> str:
+    if _status_group_for_pdf(row) == "DECEASED":
+        return "-"
+    tasks = _collect_today(row, max_items=2)
+    return " | ".join(tasks) if tasks else "-"
+
+
+def _pending_line(row: dict[str, Any]) -> str:
+    pending = _pending_items(row, max_items=2)
+    return " | ".join(pending) if pending else "-"
+
+
+def _abnormal_lab_item(item: str) -> bool:
+    text = _normalize_text(item)
+    if not text:
+        return False
+    lower = text.lower()
+    if any(token in lower for token in ["high", "low", "critical", "elevated", "abnormal", "pending", "report"]):
+        return True
+
+    checks: list[tuple[re.Pattern[str], float, float]] = [
+        (re.compile(r"\b(?:k|potassium)\s*[-:=]?\s*(\d+(?:\.\d+)?)", re.IGNORECASE), 3.5, 5.3),
+        (re.compile(r"\b(?:na|sodium)\s*[-:=]?\s*(\d+(?:\.\d+)?)", re.IGNORECASE), 130.0, 150.0),
+        (re.compile(r"\b(?:creat(?:inine)?)\s*[-:=]?\s*(\d+(?:\.\d+)?)", re.IGNORECASE), 0.0, 1.5),
+        (re.compile(r"\blactate\s*[-:=]?\s*(\d+(?:\.\d+)?)", re.IGNORECASE), 0.0, 2.0),
+        (re.compile(r"\b(?:tlc|wbc)\s*[-:=]?\s*(\d+(?:\.\d+)?)", re.IGNORECASE), 4.0, 12.0),
+    ]
+    for pattern, min_ok, max_ok in checks:
+        match = pattern.search(text)
+        if not match:
+            continue
+        value = float(match.group(1))
+        return value < min_ok or value > max_ok
+
+    return any(token in lower for token in ["abg", "ct", "mri", "ctpa", "hrct", "echo"])
+
+
+def _key_labs_top3(row: dict[str, Any]) -> str:
+    raw = str(row.get("Key labs/imaging (1 line)", "")).strip()
+    if not raw:
+        return "-"
+    parts = _split_items(raw, max_items=12)
+    abnormal = [item for item in parts if _abnormal_lab_item(item)]
+    if not abnormal:
+        return "-"
+    return " | ".join(abnormal[:3])
+
+
+def _escalation_line(row: dict[str, Any]) -> str:
+    if _status_group_for_pdf(row) == "DECEASED":
+        return "-"
+    watch = _collect_watch(row, max_items=1)
+    return watch[0] if watch else "-"
+
+
+def _card_block(row: dict[str, Any], width: float, styles: dict[str, Any]) -> Table:
+    status = _status_group_for_pdf(row)
+    bucket = _triage_bucket(row)
     bed = _normalize_text(row.get("Bed", ""))
     patient_id = _normalize_text(row.get("Patient ID", ""))
-    diagnosis = _shorten(str(row.get("Diagnosis", "")), 140 if max_detail else 90)
-    system = _normalize_text(row.get("System tag", ""))
-    matched = _normalize_text(row.get("Matched algorithms", ""))
-    trend = _normalize_text(row.get("Round trend", ""))
-    trend_reason = _shorten(_normalize_text(row.get("Deterioration reasons", "")), 50)
-    key_labs = _shorten(_normalize_text(row.get("Key labs/imaging (1 line)", "")) or "-", 180 if max_detail else 110)
+    diagnosis = _shorten(str(row.get("Diagnosis", "")) or "-", 105)
+    acuity = _acuity_label(row)
+    supports = _support_text(row)
+    change = _shorten(_change_line(row), 95)
+    must_do = _shorten(_must_do_line(row), 100)
+    pending = _shorten(_pending_line(row), 100)
+    key_labs = _shorten(_key_labs_top3(row), 75)
+    escalation = _shorten(_escalation_line(row), 60)
 
-    badges = _support_badges(row)
-    badge_text = " ".join(f"[{badge}]" for badge in badges) if badges else ""
-    trend_text = ""
-    if trend:
-        trend_text = f" | Trend: {trend}"
-        if trend_reason:
-            trend_text += f" ({trend_reason})"
-    header_line = f"<b>Bed {escape(bed)} | {escape(patient_id)}</b> <font color='{STATUS_COLOR[status]}'><b>[{status}]</b></font>"
-    if badge_text:
-        header_line += f" {escape(badge_text)}"
-    if trend_text:
-        header_line += f" <font color='#64748b'>{escape(trend_text)}</font>"
-
-    flowables: list[Any] = [
-        Paragraph(header_line, styles["card_header"]),
-        Paragraph(f"Diagnosis: {escape(diagnosis or '-')}", styles["line"]),
+    lines = [
         Paragraph(
-            f"<font color='#64748b'>System: {escape(system or '-')} | Matched: {escape(matched or '-')}</font>",
-            styles["meta"],
+            f"<b>Bed {escape(bed)} | {escape(patient_id)}</b> "
+            f"<font color='{STATUS_COLOR.get(status, '#334155')}'><b>[{escape(status)}]</b></font>",
+            styles["card_head"],
         ),
+        Paragraph(f"<b>Acuity / Supports:</b> {escape(acuity)} / {escape(supports)}", styles["card_line"]),
+        Paragraph(f"<b>Diagnosis:</b> {escape(diagnosis)}", styles["card_line"]),
+        Paragraph(f"<b>Change since last round:</b> {escape(change)}", styles["card_line"]),
+        Paragraph(f"<b>Must do before evening:</b> {escape(must_do)}", styles["card_line"]),
+        Paragraph(f"<b>Pending:</b> {escape(pending)}", styles["card_line"]),
+        Paragraph(f"<b>Key labs (3) / Escalation:</b> {escape(key_labs)} / {escape(escalation)}", styles["card_line"]),
     ]
 
-    if status != "DECEASED":
-        max_items = 4 if max_detail else 2
-        missing_tests = _missing_category_items(row, "Missing Tests", max_items=max_items)
-        missing_imaging = _missing_category_items(row, "Missing Imaging", max_items=max_items)
-        missing_consults = _missing_category_items(row, "Missing Consults", max_items=max_items)
-        care_checks = _care_check_items(row, max_items=max_items)
-        pending = _pending_items(row, max_items=max_items)
-        source_highlights = _source_highlights(row, max_items=max_items)
+    strip_color = {
+        "RED": "#ef4444",
+        "AMBER": "#f59e0b",
+        "GREEN": "#16a34a",
+        "CLOSED": "#6b7280",
+    }.get(bucket, "#64748b")
+    fill_color = {
+        "RED": "#fff1f2",
+        "AMBER": "#fff7ed",
+        "GREEN": "#f7fee7",
+        "CLOSED": "#f3f4f6",
+    }.get(bucket, "#ffffff")
 
-        if missing_tests or missing_imaging or missing_consults:
-            flowables.append(Paragraph("A) Missing (High priority first)", styles["section"]))
-            if missing_tests:
-                flowables.append(Paragraph(f"Tests: {escape('; '.join(missing_tests))}", styles["line"]))
-            if missing_imaging:
-                flowables.append(Paragraph(f"Imaging: {escape('; '.join(missing_imaging))}", styles["line"]))
-            if missing_consults:
-                flowables.append(Paragraph(f"Consults: {escape('; '.join(missing_consults))}", styles["line"]))
-
-        if care_checks:
-            flowables.append(Paragraph("B) Care checks", styles["section"]))
-            flowables.append(Paragraph(escape("; ".join(care_checks)), styles["line"]))
-
-        if pending:
-            flowables.append(Paragraph("C) Pending (source cleaned)", styles["section"]))
-            flowables.append(Paragraph(escape("; ".join(pending)), styles["line"]))
-
-        if source_highlights:
-            flowables.append(Paragraph("D) Source highlights (plan/actions/issues)", styles["section"]))
-            flowables.append(Paragraph(escape("; ".join(source_highlights)), styles["line"]))
-
-    flowables.append(Paragraph(f"<font color='#334155'>Key labs/imaging: {escape(key_labs)}</font>", styles["footer"]))
-
-    strip_width = 4 * mm
-    table = Table([[ "", flowables ]], colWidths=[strip_width, width - strip_width])
-    table.setStyle(
+    strip_width = 3.6 * mm
+    card = Table([["", lines]], colWidths=[strip_width, width - strip_width])
+    card.setStyle(
         TableStyle(
             [
-                ("BACKGROUND", (0, 0), (0, 0), colors.HexColor(STATUS_COLOR[status])),
-                ("BACKGROUND", (1, 0), (1, 0), colors.HexColor("#f8fafc")),
+                ("BACKGROUND", (0, 0), (0, 0), colors.HexColor(strip_color)),
+                ("BACKGROUND", (1, 0), (1, 0), colors.HexColor(fill_color)),
                 ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#cbd5e1")),
                 ("VALIGN", (0, 0), (-1, -1), "TOP"),
                 ("LEFTPADDING", (0, 0), (0, 0), 0),
                 ("RIGHTPADDING", (0, 0), (0, 0), 0),
-                ("LEFTPADDING", (1, 0), (1, 0), 6),
-                ("RIGHTPADDING", (1, 0), (1, 0), 6),
-                ("TOPPADDING", (1, 0), (1, 0), 5),
-                ("BOTTOMPADDING", (1, 0), (1, 0), 5),
+                ("LEFTPADDING", (1, 0), (1, 0), 5),
+                ("RIGHTPADDING", (1, 0), (1, 0), 5),
+                ("TOPPADDING", (1, 0), (1, 0), 4),
+                ("BOTTOMPADDING", (1, 0), (1, 0), 4),
             ]
         )
     )
-    return table
+    return card
+
+
+def _dashboard_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
+    return {
+        "total": len(rows),
+        "critical": sum(1 for row in rows if _status_group_for_pdf(row) == "CRITICAL"),
+        "mv": sum(1 for row in rows if bool(row.get("_is_mv"))),
+        "vaso": sum(1 for row in rows if bool(row.get("_is_vaso"))),
+        "new_admissions": sum(1 for row in rows if _is_new_admission(row)),
+        "deteriorated": sum(
+            1 for row in rows if str(row.get("Deterioration since last round", "")).strip().upper() == "YES"
+        ),
+        "pending_reports": sum(1 for row in rows if _pending_items(row, max_items=30)),
+        "procedures": sum(1 for row in rows if _is_procedure_case(row)),
+        "deaths": sum(1 for row in rows if _status_group_for_pdf(row) == "DECEASED"),
+    }
 
 
 def generate_rounds_pdf(
@@ -339,6 +567,7 @@ def generate_rounds_pdf(
     output_dir: Path = OUTPUT_DIR,
 ) -> tuple[bytes, Path]:
     _require_reportlab()
+    simple_mode = str(detail_level).strip().lower() in {"simple", "max", "default"}
 
     normalized_shift = "Morning" if str(shift).strip().lower() == "morning" else "Evening"
     use_date = run_date or datetime.now().date()
@@ -350,10 +579,10 @@ def generate_rounds_pdf(
     doc = SimpleDocTemplate(
         str(output_path),
         pagesize=A4,
-        leftMargin=9 * mm,
-        rightMargin=9 * mm,
-        topMargin=9 * mm,
-        bottomMargin=9 * mm,
+        leftMargin=6 * mm,
+        rightMargin=6 * mm,
+        topMargin=7 * mm,
+        bottomMargin=7 * mm,
     )
 
     style_sheet = getSampleStyleSheet()
@@ -361,88 +590,89 @@ def generate_rounds_pdf(
         "title": ParagraphStyle(
             "title",
             parent=style_sheet["Heading1"],
-            fontSize=13,
-            leading=15,
-            spaceAfter=2,
+            fontSize=14 if simple_mode else 13,
+            leading=16 if simple_mode else 15,
+            spaceAfter=4,
         ),
-        "meta_top": ParagraphStyle(
-            "meta_top",
+        "subhead": ParagraphStyle(
+            "subhead",
             parent=style_sheet["Normal"],
-            fontSize=8.5,
-            leading=10,
+            fontSize=8.7 if simple_mode else 8.0,
+            leading=10.2 if simple_mode else 9.4,
             textColor=colors.HexColor("#334155"),
-            spaceAfter=5,
-        ),
-        "card_header": ParagraphStyle(
-            "card_header",
-            parent=style_sheet["Normal"],
-            fontSize=8.5,
-            leading=10,
-            spaceAfter=2,
-        ),
-        "meta": ParagraphStyle(
-            "meta",
-            parent=style_sheet["Normal"],
-            fontSize=7.2,
-            leading=8.4,
-            spaceAfter=2,
+            spaceAfter=4,
         ),
         "section": ParagraphStyle(
             "section",
             parent=style_sheet["Normal"],
-            fontSize=7.8,
-            leading=9.2,
-            spaceBefore=1,
-            spaceAfter=1,
+            fontSize=9,
+            leading=10.2,
+            fontName="Helvetica-Bold",
+            textColor=colors.HexColor("#0f172a"),
+            spaceAfter=2,
+        ),
+        "card_head": ParagraphStyle(
+            "card_head",
+            parent=style_sheet["Normal"],
+            fontSize=8.6 if simple_mode else 7.8,
+            leading=9.8 if simple_mode else 8.9,
             fontName="Helvetica-Bold",
             textColor=colors.HexColor("#0f172a"),
         ),
-        "line": ParagraphStyle(
-            "line",
+        "card_line": ParagraphStyle(
+            "card_line",
             parent=style_sheet["Normal"],
-            fontSize=7.6,
-            leading=8.9,
-            spaceAfter=1,
-        ),
-        "footer": ParagraphStyle(
-            "footer",
-            parent=style_sheet["Normal"],
-            fontSize=7.2,
-            leading=8.2,
-            spaceBefore=2,
+            fontSize=7.4 if simple_mode else 6.8,
+            leading=8.6 if simple_mode else 7.8,
+            textColor=colors.HexColor("#0f172a"),
+            spaceAfter=0.4,
         ),
     }
 
-    # Keep PDF card order bed-wise to match app display, while preserving per-card status colors.
-    sorted_rows = sorted(rows, key=_bed_sort_key_for_pdf)
-    critical_count, mv_count, vaso_count, pending_count = _status_counts(sorted_rows)
+    sorted_rows = sorted(rows, key=_triage_sort_key)
+    counts = _dashboard_counts(sorted_rows)
+    bucket_counts = {
+        "red": sum(1 for row in sorted_rows if _triage_bucket(row) == "RED"),
+        "amber": sum(1 for row in sorted_rows if _triage_bucket(row) == "AMBER"),
+        "green": sum(1 for row in sorted_rows if _triage_bucket(row) == "GREEN"),
+    }
 
     story: list[Any] = []
     story.append(Paragraph(f"ICU Rounds - {use_date.isoformat()} - {normalized_shift}", styles["title"]))
     story.append(
         Paragraph(
-            f"Total beds: {len(sorted_rows)} | CRITICAL: {critical_count} | MV: {mv_count} | "
-            f"Vasopressor: {vaso_count} | Pending reports: {pending_count} | PDF detail: {detail_level.upper()}",
-            styles["meta_top"],
+            (
+                f"Beds {counts['total']} | Critical {counts['critical']} | MV {counts['mv']} | "
+                f"Vaso {counts['vaso']} | Red {bucket_counts['red']} | Amber {bucket_counts['amber']} | "
+                f"Green {bucket_counts['green']} | Pending {counts['pending_reports']}"
+            ),
+            styles["subhead"],
+        )
+    )
+    story.append(
+        Paragraph(
+            "Cards are ordered by usefulness: unstable, new admission, deteriorated, procedure pending, then stable.",
+            styles["subhead"],
         )
     )
 
-    cards_per_page = 2 if str(detail_level).lower() == "max" else CARDS_PER_PAGE
-    for index, row in enumerate(sorted_rows):
-        if index and index % cards_per_page == 0:
+    cards_per_page = 3 if simple_mode else 4
+    for idx, row in enumerate(sorted_rows):
+        if idx and idx % cards_per_page == 0:
             story.append(PageBreak())
             story.append(Paragraph(f"ICU Rounds - {use_date.isoformat()} - {normalized_shift}", styles["title"]))
             story.append(
                 Paragraph(
-                    f"Total beds: {len(sorted_rows)} | CRITICAL: {critical_count} | MV: {mv_count} | "
-                    f"Vasopressor: {vaso_count} | Pending reports: {pending_count} | PDF detail: {detail_level.upper()}",
-                    styles["meta_top"],
+                    (
+                        f"Beds {counts['total']} | Critical {counts['critical']} | MV {counts['mv']} | "
+                        f"Vaso {counts['vaso']} | Pending {counts['pending_reports']}"
+                    ),
+                    styles["subhead"],
                 )
             )
-
-        story.append(_card_table(row, doc.width, styles, detail_level=detail_level))
-        if (index + 1) % cards_per_page != 0:
-            story.append(Spacer(1, 3 * mm))
+        story.append(_card_block(row, doc.width, styles))
+        if (idx + 1) % cards_per_page != 0:
+            story.append(Spacer(1, 2.5 * mm))
 
     doc.build(story)
     return output_path.read_bytes(), output_path

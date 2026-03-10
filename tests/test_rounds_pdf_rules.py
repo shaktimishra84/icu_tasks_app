@@ -9,6 +9,7 @@ from src.rounds_pdf import (
     _missing_category_items,
     _pending_items,
     _status_group_for_pdf,
+    _triage_sort_key,
 )
 
 
@@ -85,6 +86,16 @@ class RoundsPdfRulesTests(unittest.TestCase):
         ]
         ordered = sorted(rows, key=_bed_sort_key_for_pdf)
         self.assertEqual([row["Bed"] for row in ordered], ["1", "2", "10"])
+
+    def test_triage_sort_prioritizes_critical_before_stable(self) -> None:
+        rows = [
+            {"Bed": "1", "Patient ID": "P-1", "_status_group": "SERIOUS"},
+            {"Bed": "20", "Patient ID": "P-20", "_status_group": "CRITICAL"},
+            {"Bed": "3", "Patient ID": "P-3", "_status_group": "SICK", "_is_mv": True},
+        ]
+        ordered = sorted(rows, key=_triage_sort_key)
+        self.assertEqual(ordered[0]["Patient ID"], "P-20")
+        self.assertEqual(ordered[1]["Patient ID"], "P-3")
 
 
 if __name__ == "__main__":
