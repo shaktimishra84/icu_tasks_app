@@ -628,7 +628,7 @@ def generate_rounds_pdf(
         ),
     }
 
-    sorted_rows = sorted(rows, key=_triage_sort_key)
+    sorted_rows = sorted(rows, key=_bed_sort_key_for_pdf)
     counts = _dashboard_counts(sorted_rows)
     bucket_counts = {
         "red": sum(1 for row in sorted_rows if _triage_bucket(row) == "RED"),
@@ -650,7 +650,7 @@ def generate_rounds_pdf(
     )
     story.append(
         Paragraph(
-            "Order: unstable -> new admission -> deteriorated -> procedure pending -> stable",
+            "Order: bed number ascending",
             styles["subhead"],
         )
     )
