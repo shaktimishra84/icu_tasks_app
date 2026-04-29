@@ -290,47 +290,51 @@ def _inject_dashboard_theme() -> None:
     st.markdown(
         """
         <style>
-        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap');
 
         :root {
-            --icu-bg-a: #0b1220;
-            --icu-bg-b: #101f2e;
-            --icu-bg-c: #16273b;
-            --icu-panel: #121c2a;
-            --icu-panel-elev: #172638;
-            --icu-ink: #e5eef8;
-            --icu-muted: #9ab0c7;
-            --icu-line: #273f56;
-            --icu-critical: #dc4f4f;
-            --icu-sick: #e79a3b;
-            --icu-serious: #d4b257;
-            --icu-deceased: #7e8fa5;
-            --icu-other: #63a8de;
-            --icu-pill: #2b74a8;
-            --icu-accent: #39c0c3;
+            --bg: #0c0e19;
+            --bg-card: #141828;
+            --bg-card-h: #1b2038;
+            --bg-sidebar: #090b14;
+            --bg-header: #0d0f1c;
+            --bg-input: #1a1e30;
+            --border: rgba(255,255,255,0.07);
+            --border-s: rgba(255,255,255,0.13);
+            --text: #dde3f2;
+            --text-2: #8892ae;
+            --text-3: #4a5270;
+            --accent: #3b82f6;
+            --critical: #ef4444;
+            --guarded: #f59e0b;
+            --serious: #d4b257;
+            --deceased: #6b7280;
+            --radius: 10px;
         }
 
         .stApp, [data-testid="stAppViewContainer"] {
-            background:
-                radial-gradient(circle at 12% -2%, var(--icu-bg-c) 0%, transparent 48%),
-                radial-gradient(circle at 86% -8%, #22344b 0%, transparent 42%),
-                linear-gradient(180deg, var(--icu-bg-a) 0%, var(--icu-bg-b) 100%);
-            color: var(--icu-ink);
-            font-family: "Space Grotesk", "Avenir Next", "Trebuchet MS", sans-serif;
+            background: var(--bg) !important;
+            color: var(--text) !important;
+            font-family: "IBM Plex Sans", system-ui, sans-serif !important;
         }
 
-        h1, h2, h3, h4, p, li, div, span, label {
-            color: var(--icu-ink);
-            font-family: "Space Grotesk", "Avenir Next", "Trebuchet MS", sans-serif;
+        [data-testid="stHeader"] {
+            background: transparent !important;
         }
 
         [data-testid="stSidebar"] {
-            background: linear-gradient(180deg, #0e1725 0%, #132132 100%);
-            border-right: 1px solid var(--icu-line);
+            background: var(--bg-sidebar) !important;
+            border-right: 1px solid var(--border);
         }
 
         [data-testid="stSidebar"] * {
-            color: var(--icu-ink) !important;
+            color: var(--text) !important;
+            font-family: "IBM Plex Sans", system-ui, sans-serif !important;
+        }
+
+        h1, h2, h3, h4, h5, h6, p, li, label, div, span {
+            color: var(--text);
+            font-family: "IBM Plex Sans", system-ui, sans-serif;
         }
 
         [data-baseweb="input"] input,
@@ -340,77 +344,137 @@ def _inject_dashboard_theme() -> None:
         .stTextArea textarea,
         .stSelectbox div[data-baseweb="select"] > div,
         .stDateInput input {
-            background: #1a2a3d !important;
-            border-color: #36516a !important;
-            color: var(--icu-ink) !important;
+            background: var(--bg-input) !important;
+            border-color: var(--border-s) !important;
+            color: var(--text) !important;
         }
 
         [data-baseweb="select"] svg,
         .stSelectbox svg,
         .stDateInput svg {
-            fill: var(--icu-muted) !important;
+            fill: var(--text-2) !important;
         }
 
         .stButton button,
         .stDownloadButton button {
-            background: #1c2f45 !important;
-            color: #e8f2fb !important;
-            border: 1px solid #3a5975 !important;
+            width: 100%;
+            border-radius: 8px !important;
+            border: 1px solid var(--border-s) !important;
+            background: var(--bg-card) !important;
+            color: var(--text) !important;
+            font-size: 14px !important;
+            font-weight: 600 !important;
+            font-family: "IBM Plex Sans", system-ui, sans-serif !important;
         }
 
         .stButton button:hover,
         .stDownloadButton button:hover {
-            background: #24405c !important;
-            border-color: #4d7396 !important;
+            background: var(--bg-card-h) !important;
+            border-color: var(--accent) !important;
         }
 
         .stAlert {
-            background: #18283a !important;
-            border: 1px solid #2f4963 !important;
-            color: var(--icu-ink) !important;
+            background: var(--bg-card) !important;
+            border: 1px solid var(--border-s) !important;
+            color: var(--text) !important;
         }
 
         [data-testid="stVerticalBlockBorderWrapper"] {
-            background: linear-gradient(180deg, rgba(18, 28, 42, 0.92), rgba(12, 20, 31, 0.95));
-            border: 1px solid var(--icu-line) !important;
-            box-shadow: 0 12px 28px rgba(2, 6, 12, 0.36) !important;
+            background: var(--bg-card) !important;
+            border: 1px solid var(--border) !important;
+            border-radius: var(--radius) !important;
+            box-shadow: none !important;
+        }
+
+        [data-testid="stTabs"] [role="tablist"] {
+            border-bottom: 1px solid var(--border);
+            gap: 2px;
         }
 
         [data-testid="stTabs"] [role="tab"] {
-            border-radius: 999px;
-            background: #1a2a3b;
-            border: 1px solid #314d66;
-            margin-right: 6px;
-            padding: 8px 12px;
-            color: #d5e4f3 !important;
+            border: none !important;
+            border-radius: 0 !important;
+            background: transparent !important;
+            color: var(--text-2) !important;
+            font-weight: 600;
+            padding: 10px 6px 12px 6px;
+            margin-right: 20px;
         }
 
-        [data-testid="stTabs"] [aria-selected="true"] {
-            background: #27808a !important;
-            color: #ffffff !important;
-            border-color: #35a7b2 !important;
+        [data-testid="stTabs"] [role="tab"][aria-selected="true"] {
+            color: var(--text) !important;
+            box-shadow: inset 0 -2px 0 0 var(--critical);
+        }
+
+        .icu-topbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 12px 14px;
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background: var(--bg-header);
+            margin-bottom: 12px;
+        }
+
+        .icu-topbar-title {
+            font-size: 16px;
+            font-weight: 700;
+            letter-spacing: 0.01em;
+            color: var(--text);
+        }
+
+        .icu-topbar-subtitle {
+            font-size: 12px;
+            color: var(--text-2);
+            margin-top: 2px;
+        }
+
+        .icu-unit-chip {
+            display: inline-block;
+            padding: 5px 10px;
+            border-radius: 20px;
+            border: 1px solid var(--border-s);
+            font-size: 11px;
+            font-weight: 600;
+            color: var(--text);
+            background: var(--bg-card);
+            white-space: nowrap;
+        }
+
+        .icu-warning-banner {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 10px 14px;
+            border-radius: 8px;
+            border: 1px solid rgba(245, 158, 11, 0.28);
+            background: rgba(245, 158, 11, 0.12);
+            color: #fcd34d;
+            font-size: 13px;
+            margin-bottom: 12px;
         }
 
         .icu-metric-grid {
             display: grid;
             grid-template-columns: repeat(6, minmax(120px, 1fr));
             gap: 10px;
-            margin: 8px 0 16px 0;
+            margin: 6px 0 16px 0;
         }
 
         .icu-metric-card {
-            border: 1px solid var(--icu-line);
-            border-radius: 14px;
-            background: linear-gradient(145deg, var(--icu-panel-elev), var(--icu-panel));
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            background: var(--bg-card);
             padding: 10px 12px;
-            box-shadow: 0 10px 26px rgba(1, 5, 10, 0.34);
         }
 
         .icu-metric-label {
             font-size: 11px;
             letter-spacing: 0.05em;
             text-transform: uppercase;
-            color: var(--icu-muted);
+            color: var(--text-3);
         }
 
         .icu-metric-value {
@@ -418,6 +482,7 @@ def _inject_dashboard_theme() -> None:
             line-height: 1.1;
             font-weight: 700;
             margin-top: 3px;
+            color: var(--text);
         }
 
         .icu-chip {
@@ -431,46 +496,24 @@ def _inject_dashboard_theme() -> None:
             vertical-align: middle;
         }
 
-        .icu-chip.critical { background: var(--icu-critical); }
-        .icu-chip.sick { background: var(--icu-sick); }
-        .icu-chip.serious { background: var(--icu-serious); }
-        .icu-chip.deceased { background: var(--icu-deceased); }
-        .icu-chip.other { background: var(--icu-other); }
+        .icu-chip.critical { background: var(--critical); }
+        .icu-chip.sick { background: var(--guarded); }
+        .icu-chip.serious { background: var(--serious); color: #111827; }
+        .icu-chip.deceased { background: var(--deceased); }
+        .icu-chip.other { background: #3b82f6; }
 
         .icu-pill {
             display: inline-block;
-            background: var(--icu-pill);
-            color: #fff;
+            background: #1e3a8a;
+            color: #dbeafe;
             border-radius: 999px;
             padding: 2px 8px;
             font-size: 11px;
             margin-left: 6px;
         }
 
-        .icu-lab-note {
-            font-family: "IBM Plex Mono", "Menlo", monospace;
-            font-size: 12px;
-            color: #bfe7f0;
-            background: #132838;
-            border: 1px solid #2c5a72;
-            border-radius: 10px;
-            padding: 6px 8px;
-            margin-top: 8px;
-        }
-
-        .icu-column-head {
-            margin: 6px 0 10px 0;
-            padding: 6px 8px;
-            background: rgba(22, 36, 52, 0.86);
-            border: 1px dashed #365775;
-            border-radius: 10px;
-            font-weight: 700;
-            font-size: 13px;
-            color: #d9e8f8;
-        }
-
         .stCaption, .stMarkdown p, .stMarkdown li {
-            color: var(--icu-muted) !important;
+            color: var(--text-2) !important;
         }
 
         @media (max-width: 1100px) {
@@ -482,9 +525,31 @@ def _inject_dashboard_theme() -> None:
             .icu-metric-grid {
                 grid-template-columns: repeat(2, minmax(120px, 1fr));
             }
+            .icu-topbar {
+                flex-direction: column;
+                align-items: flex-start;
+            }
         }
         </style>
         """,
+        unsafe_allow_html=True,
+    )
+
+
+def _render_app_header(selected_icu_unit: str) -> None:
+    st.markdown(
+        (
+            "<div class='icu-topbar'>"
+            "<div>"
+            "<div class='icu-topbar-title'>ICU Task Assistant</div>"
+            "<div class='icu-topbar-subtitle'>Round-ready bed cards · change detection · course tracking</div>"
+            "</div>"
+            f"<span class='icu-unit-chip'>{escape(selected_icu_unit)}</span>"
+            "</div>"
+            "<div class='icu-warning-banner'>"
+            "⚠ Clinical decision support only. A licensed clinician must verify every recommendation before use."
+            "</div>"
+        ),
         unsafe_allow_html=True,
     )
 
@@ -2100,7 +2165,7 @@ def _render_all_beds_panel(
     if not all_beds_output:
         return
 
-    all_beds_output = sorted(all_beds_output, key=_triage_sort_key)
+    all_beds_output = sorted(all_beds_output, key=_bed_sort_key)
     _render_summary_tiles(all_beds_output)
     has_discrepancy = _render_discrepancy_audit(source_rows or [], all_beds_output)
 
@@ -2123,39 +2188,22 @@ def _render_all_beds_panel(
         horizontal=True,
         key=f"dashboard_layout_{key_prefix}",
     )
-    filtered_records = sorted(_apply_filters(all_beds_output), key=_triage_sort_key)
-    st.caption(f"Showing {len(filtered_records)} of {len(all_beds_output)} beds after filters")
+    filtered_records = sorted(_apply_filters(all_beds_output), key=_bed_sort_key)
+    st.caption(
+        f"Showing {len(filtered_records)} of {len(all_beds_output)} beds after filters "
+        "(bed-wise ascending order)."
+    )
     if layout_mode == "Detailed list":
-        st.caption("Detailed list: triage-first (unstable -> new -> deteriorated -> procedure -> stable).")
-        groups: list[tuple[str, str]] = [
-            ("Immediate review", "RED"),
-            ("Action pending", "AMBER"),
-            ("Stable watch", "GREEN"),
-        ]
-        for title, bucket in groups:
-            section_rows = [row for row in filtered_records if _triage_bucket(row) == bucket]
-            if not section_rows:
-                continue
-            st.markdown(f"### {title}")
-            for row in section_rows:
-                _render_bed_card(
-                    row,
-                    key_prefix=key_prefix,
-                    show_course_button=show_course_button,
-                    collapsible=False,
-                )
-        closed_rows = [row for row in filtered_records if _triage_bucket(row) == "CLOSED"]
-        if closed_rows:
-            st.markdown("### Closed / handover-only")
-            for row in closed_rows:
-                _render_bed_card(
-                    row,
-                    key_prefix=key_prefix,
-                    show_course_button=show_course_button,
-                    collapsible=False,
-                )
+        st.caption("Detailed list view: bed-wise cards with status color coding.")
+        for row in filtered_records:
+            _render_bed_card(
+                row,
+                key_prefix=key_prefix,
+                show_course_button=show_course_button,
+                collapsible=False,
+            )
     else:
-        st.caption("Bed grid: triage-first cards. Click each card to open full details.")
+        st.caption("Bed grid view: bed-wise ascending cards. Click each card to open full details.")
         if not filtered_records:
             st.info("No beds match the current filters.")
         else:
@@ -2254,12 +2302,6 @@ if "active_tracker_unit" not in st.session_state:
 knowledge_base: KnowledgeBase = st.session_state.knowledge_base
 advisor: ClinicalTaskAdvisor = st.session_state.advisor
 
-st.title("ICU Task Assistant")
-st.caption("Round-ready bed cards with deterministic rules, round-over-round course tracking, and change detection.")
-st.warning(
-    "Clinical decision support only. A licensed clinician must verify every recommendation before use.",
-    icon="⚠️",
-)
 _ensure_startup_index(knowledge_base)
 
 st.sidebar.header("Settings")
@@ -2274,6 +2316,8 @@ selected_icu_unit = st.sidebar.selectbox(
 if selected_icu_unit != st.session_state.get("active_tracker_unit"):
     _clear_tracker_state()
     st.session_state.active_tracker_unit = selected_icu_unit
+
+_render_app_header(selected_icu_unit)
 
 history_store_cache: dict[str, ICUHistoryStore] = st.session_state.history_store_cache
 if selected_icu_unit not in history_store_cache:
