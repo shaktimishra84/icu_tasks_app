@@ -2391,6 +2391,13 @@ with case_tab:
                 st.session_state["rmo_pdf_warnings"] = warning_raw if isinstance(warning_raw, list) else []
                 debug_raw = parsed_rmo.get("debug_blocks", [])
                 st.session_state["rmo_pdf_debug_blocks"] = debug_raw if isinstance(debug_raw, list) else []
+                if parsed_rows:
+                    auto_output = _safe_build_all_beds(parsed_rows)
+                    if auto_output:
+                        st.session_state["rmo_pdf_output"] = auto_output
+                        st.session_state["rmo_pdf_autobuilt_signature"] = rmo_signature
+                else:
+                    st.session_state.pop("rmo_pdf_output", None)
 
         rmo_rows = st.session_state.get("rmo_pdf_rows", [])
         rmo_blocks = int(st.session_state.get("rmo_pdf_blocks", 0) or 0)
@@ -2399,6 +2406,11 @@ with case_tab:
 
         st.write(f"Patient packets detected = {rmo_blocks}")
         st.write(f"Beds parsed = {len(rmo_rows)}")
+        if rmo_blocks > 0 and len(rmo_rows) == 0:
+            st.error(
+                "RMO packets were detected but no bed rows were parsed. "
+                "Open `RMO parser debug` below and share it so parser rules can be tuned."
+            )
         if rmo_warnings:
             with st.expander("RMO parser warnings", expanded=False):
                 for warning in rmo_warnings:
@@ -2408,7 +2420,7 @@ with case_tab:
             st.json(rmo_rows[:2])
 
         if rmo_rows and st.button(
-            "Generate output for ALL beds (from RMO PDF)",
+            "Regenerate output for ALL beds (from RMO PDF)",
             type="primary",
             use_container_width=True,
             key="generate_all_beds_rmo_pdf",
@@ -2419,11 +2431,15 @@ with case_tab:
 
         rmo_output_rows = st.session_state.get("rmo_pdf_output", [])
         if rmo_output_rows:
+            if st.session_state.get("rmo_pdf_autobuilt_signature") == rmo_signature:
+                st.success("Auto-generated bed-wise output from uploaded RMO PDF.")
             _render_all_beds_panel(
                 rmo_output_rows,
                 key_prefix="rmo_pdf",
                 source_rows=rmo_rows,
             )
+        elif rmo_rows:
+            st.warning("Beds were parsed but output table is empty. Click `Regenerate output for ALL beds`.")
 
     st.divider()
     st.subheader("ICU Tracker (DOCX rounds dashboard)")
@@ -2620,9 +2636,11 @@ with case_tab:
     debug_raw_rows: list[list[str]] = []
     extracted_parse_warnings: list[str] = []
     extracted_table_index: int | None = None
+    all_beds_file_signature = ""
 
     if patient_file is not None:
         file_signature = _uploaded_file_fingerprint(patient_file)
+        all_beds_file_signature = file_signature
         if st.session_state.get("all_beds_file_signature") != file_signature:
             st.session_state.pop("all_beds_output", None)
             st.session_state.pop("all_beds_source_rows", None)
@@ -2664,8 +2682,17 @@ with case_tab:
         with st.expander("Debug parsed records", expanded=False):
             st.json(extracted_table_rows[:2])
 
+        last_autobuilt_signature = str(st.session_state.get("all_beds_autobuilt_signature", ""))
+        if all_beds_file_signature and last_autobuilt_signature != all_beds_file_signature:
+            auto_single_note_output = _safe_build_all_beds(extracted_table_rows)
+            if auto_single_note_output:
+                st.session_state.all_beds_output = auto_single_note_output
+                st.session_state.all_beds_source_rows = list(extracted_table_rows)
+                st.session_state["all_beds_autobuilt_signature"] = all_beds_file_signature
+                st.success("Auto-generated bed-wise output from uploaded table.")
+
         if st.button(
-            "Generate output for ALL beds",
+            "Regenerate output for ALL beds",
             type="primary",
             use_container_width=True,
             key="generate_all_beds_single_note",
@@ -2674,11 +2701,15 @@ with case_tab:
             if single_note_output:
                 st.session_state.all_beds_output = single_note_output
                 st.session_state.all_beds_source_rows = list(extracted_table_rows)
+                if all_beds_file_signature:
+                    st.session_state["all_beds_autobuilt_signature"] = all_beds_file_signature
 
         all_beds_output = st.session_state.get("all_beds_output", [])
         source_rows = st.session_state.get("all_beds_source_rows", [])
         if all_beds_output:
             _render_all_beds_panel(all_beds_output, key_prefix="single_note", source_rows=source_rows)
+        else:
+            st.warning("Beds were parsed but output is empty. Click `Regenerate output for ALL beds`.")
     elif patient_file is not None and patient_file.name.lower().endswith(".docx") and not round_files:
         st.write("Beds parsed = 0")
         with st.expander("Debug parsed records", expanded=False):
