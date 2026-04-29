@@ -35,6 +35,7 @@ from src.rounds_tracker import (
     support_labels_from_state,
 )
 from src.rounds_pdf import generate_rounds_pdf
+from src.rmo_pdf import parse_combined_rmo_pdf
 
 
 APP_DIR = Path(__file__).parent
@@ -2358,6 +2359,73 @@ with resources_tab:
             st.write(f"- `{file_path}`")
 
 with case_tab:
+    st.subheader("ICU Tracker (Combined RMO PDF)")
+    rmo_pdf_upload = st.file_uploader(
+        "Upload combined RMO PDF (multi-patient packet)",
+        type=["pdf"],
+        accept_multiple_files=False,
+        key="combined_rmo_pdf_upload",
+    )
+
+    if rmo_pdf_upload is not None:
+        rmo_signature = _uploaded_file_fingerprint(rmo_pdf_upload)
+        if st.session_state.get("rmo_pdf_signature") != rmo_signature:
+            st.session_state["rmo_pdf_signature"] = rmo_signature
+            st.session_state.pop("rmo_pdf_rows", None)
+            st.session_state.pop("rmo_pdf_output", None)
+            st.session_state.pop("rounds_pdf_bytes_rmo_pdf", None)
+            st.session_state.pop("rounds_pdf_file_rmo_pdf", None)
+
+            try:
+                parsed_rmo = parse_combined_rmo_pdf(rmo_pdf_upload.name, rmo_pdf_upload.getvalue())
+            except Exception as error:
+                st.error(f"Combined RMO PDF parse failed: {error}")
+                parsed_rmo = None
+
+            if isinstance(parsed_rmo, dict):
+                table_rows_raw = parsed_rmo.get("table_rows", [])
+                parsed_rows = table_rows_raw if isinstance(table_rows_raw, list) else []
+                st.session_state["rmo_pdf_rows"] = parsed_rows
+                st.session_state["rmo_pdf_blocks"] = int(parsed_rmo.get("blocks_detected", 0) or 0)
+                warning_raw = parsed_rmo.get("warnings", [])
+                st.session_state["rmo_pdf_warnings"] = warning_raw if isinstance(warning_raw, list) else []
+                debug_raw = parsed_rmo.get("debug_blocks", [])
+                st.session_state["rmo_pdf_debug_blocks"] = debug_raw if isinstance(debug_raw, list) else []
+
+        rmo_rows = st.session_state.get("rmo_pdf_rows", [])
+        rmo_blocks = int(st.session_state.get("rmo_pdf_blocks", 0) or 0)
+        rmo_warnings = st.session_state.get("rmo_pdf_warnings", [])
+        rmo_debug_blocks = st.session_state.get("rmo_pdf_debug_blocks", [])
+
+        st.write(f"Patient packets detected = {rmo_blocks}")
+        st.write(f"Beds parsed = {len(rmo_rows)}")
+        if rmo_warnings:
+            with st.expander("RMO parser warnings", expanded=False):
+                for warning in rmo_warnings:
+                    st.markdown(f"- {warning}")
+        with st.expander("RMO parser debug (first 2 blocks)", expanded=False):
+            st.json(rmo_debug_blocks[:2])
+            st.json(rmo_rows[:2])
+
+        if rmo_rows and st.button(
+            "Generate output for ALL beds (from RMO PDF)",
+            type="primary",
+            use_container_width=True,
+            key="generate_all_beds_rmo_pdf",
+        ):
+            rmo_output = _safe_build_all_beds(rmo_rows)
+            if rmo_output:
+                st.session_state["rmo_pdf_output"] = rmo_output
+
+        rmo_output_rows = st.session_state.get("rmo_pdf_output", [])
+        if rmo_output_rows:
+            _render_all_beds_panel(
+                rmo_output_rows,
+                key_prefix="rmo_pdf",
+                source_rows=rmo_rows,
+            )
+
+    st.divider()
     st.subheader("ICU Tracker (DOCX rounds dashboard)")
     st.caption(f"Current ICU navigation: **{selected_icu_unit}**")
     if not st.session_state.get("tracker_output"):
