@@ -1383,6 +1383,106 @@ def _render_deterioration_table(records: list[dict[str, Any]]) -> None:
     )
 
 
+def _state_rows_from_source_rows(source_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    state_rows: list[dict[str, Any]] = []
+    for row in source_rows:
+        patient_key = patient_key_from_source_row(row)
+        if not patient_key:
+            continue
+        state_rows.append(
+            {
+                "patient_key": patient_key,
+                "patient_id": str(row.get("patient_id", "")).strip(),
+                "bed": str(row.get("bed", "")).strip(),
+                "diagnosis": str(row.get("diagnosis", "")).strip(),
+                "status": str(row.get("status", "")).strip(),
+                "supports": str(row.get("supports", "")).strip(),
+                "new_issues": str(row.get("new_issues", "")).strip(),
+                "actions_done": str(row.get("actions_done", "")).strip(),
+                "plan_next_12h": str(row.get("plan_next_12h", "")).strip(),
+                "pending": str(row.get("pending", "")).strip(),
+                "key_labs_imaging": str(row.get("key_labs_imaging", "")).strip(),
+            }
+        )
+    return state_rows
+
+
+def _render_round_comparison_table(
+    changes: list[dict[str, Any]],
+    *,
+    older_label: str,
+    newer_label: str,
+) -> None:
+    if not changes:
+        return
+
+    st.markdown("### Round Comparison Table")
+    st.caption(f"Comparing `{older_label}` -> `{newer_label}`")
+
+    rows: list[dict[str, Any]] = []
+    for change in sorted(changes, key=lambda item: (_bed_sort_value(item.get("bed", "")), str(item.get("patient_id", "")))):
+        supports_added = list(change.get("supports_added", []) or [])
+        supports_removed = list(change.get("supports_removed", []) or [])
+        supports_delta_parts: list[str] = []
+        if supports_added:
+            supports_delta_parts.append("+" + ", ".join(supports_added))
+        if supports_removed:
+            supports_delta_parts.append("-" + ", ".join(supports_removed))
+        supports_delta = " ; ".join(supports_delta_parts) if supports_delta_parts else "-"
+
+        pending_new = list(change.get("pending_new", []) or [])
+        pending_resolved = list(change.get("pending_resolved", []) or [])
+        pending_delta_parts: list[str] = []
+        if pending_new:
+            pending_delta_parts.append("new: " + " | ".join(pending_new[:2]))
+        if pending_resolved:
+            pending_delta_parts.append("resolved: " + " | ".join(pending_resolved[:2]))
+        pending_delta = " ; ".join(pending_delta_parts) if pending_delta_parts else "-"
+
+        previous_status = str(change.get("previous_status_group", "")).strip()
+        current_status = str(change.get("current_status_group", "")).strip() or "-"
+        status_change = f"{previous_status} -> {current_status}" if previous_status else f"NEW -> {current_status}"
+
+        key_change = " ; ".join(str(line) for line in list(change.get("summary_lines", []))[:2]) or "-"
+
+        rows.append(
+            {
+                "Bed": str(change.get("bed", "")).strip(),
+                "Patient ID": str(change.get("patient_id", "")).strip(),
+                "Trend": str(change.get("trend", "")).strip(),
+                "Status change": status_change,
+                "Supports delta": supports_delta,
+                "Pending delta": pending_delta,
+                "Key change": key_change,
+            }
+        )
+
+    if not rows:
+        return
+
+    if pd is None:
+        st.table(rows)
+        return
+
+    dataframe = pd.DataFrame(rows)
+
+    def _row_style(row: Any) -> list[str]:
+        trend = str(row.get("Trend", "")).upper()
+        if trend == "DETERIORATED":
+            return ["background-color: #fee2e2; color: #7f1d1d; font-weight: 600;" for _ in row]
+        if trend == "IMPROVED":
+            return ["background-color: #dcfce7; color: #14532d;" for _ in row]
+        if trend == "NEW ADMISSION":
+            return ["background-color: #dbeafe; color: #1e3a8a;" for _ in row]
+        return ["" for _ in row]
+
+    st.dataframe(
+        dataframe.style.apply(_row_style, axis=1),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
 def _snapshot_label(snapshot: dict[str, Any] | None) -> str:
     if not snapshot:
         return "No round"
@@ -2404,64 +2504,130 @@ with resources_tab:
 
 with case_tab:
     st.subheader("ICU Tracker (PDF rounds dashboard)")
-    rmo_pdf_upload = st.file_uploader(
-        "Upload combined RMO PDF (multi-patient packet)",
+    rmo_pdf_uploads = st.file_uploader(
+        "Upload 1 or 2 rounds PDFs (comparison table appears when 2 files are uploaded)",
         type=["pdf"],
-        accept_multiple_files=False,
+        accept_multiple_files=True,
         key="combined_rmo_pdf_upload",
     )
 
-    if rmo_pdf_upload is not None:
-        rmo_signature = _uploaded_file_fingerprint(rmo_pdf_upload)
+    if rmo_pdf_uploads:
+        selected_pdf_files = list(rmo_pdf_uploads[:2])
+        if len(rmo_pdf_uploads) > 2:
+            st.warning("Only the first 2 PDFs are used for comparison in this version.")
+
+        rmo_signature = "|".join(_uploaded_file_fingerprint(upload) for upload in selected_pdf_files)
         if st.session_state.get("rmo_pdf_signature") != rmo_signature:
             st.session_state["rmo_pdf_signature"] = rmo_signature
+            st.session_state.pop("rmo_pdf_docs", None)
             st.session_state.pop("rmo_pdf_rows", None)
+            st.session_state.pop("rmo_pdf_previous_rows", None)
+            st.session_state.pop("rmo_pdf_changes", None)
+            st.session_state.pop("rmo_pdf_older_label", None)
+            st.session_state.pop("rmo_pdf_newer_label", None)
+            st.session_state.pop("rmo_pdf_compare_context", None)
             st.session_state.pop("rmo_pdf_output", None)
             st.session_state.pop("rounds_pdf_bytes_rmo_pdf", None)
             st.session_state.pop("rounds_pdf_file_rmo_pdf", None)
 
-            try:
-                parsed_rmo = parse_combined_rmo_pdf(rmo_pdf_upload.name, rmo_pdf_upload.getvalue())
-            except Exception as error:
-                st.error(f"Combined RMO PDF parse failed: {error}")
-                parsed_rmo = None
+            parsed_docs: list[dict[str, Any]] = []
+            for upload in selected_pdf_files:
+                try:
+                    parsed_rmo = parse_combined_rmo_pdf(upload.name, upload.getvalue())
+                except Exception as error:
+                    st.error(f"Combined RMO PDF parse failed for `{upload.name}`: {error}")
+                    continue
 
-            if isinstance(parsed_rmo, dict):
+                if not isinstance(parsed_rmo, dict):
+                    continue
                 table_rows_raw = parsed_rmo.get("table_rows", [])
                 parsed_rows = table_rows_raw if isinstance(table_rows_raw, list) else []
-                st.session_state["rmo_pdf_rows"] = parsed_rows
-                st.session_state["rmo_pdf_blocks"] = int(parsed_rmo.get("blocks_detected", 0) or 0)
                 warning_raw = parsed_rmo.get("warnings", [])
-                st.session_state["rmo_pdf_warnings"] = warning_raw if isinstance(warning_raw, list) else []
                 debug_raw = parsed_rmo.get("debug_blocks", [])
-                st.session_state["rmo_pdf_debug_blocks"] = debug_raw if isinstance(debug_raw, list) else []
-                if parsed_rows:
-                    auto_output = _safe_build_all_beds(parsed_rows)
+                parsed_docs.append(
+                    {
+                        "name": upload.name,
+                        "rows": parsed_rows,
+                        "blocks": int(parsed_rmo.get("blocks_detected", 0) or 0),
+                        "warnings": warning_raw if isinstance(warning_raw, list) else [],
+                        "debug_blocks": debug_raw if isinstance(debug_raw, list) else [],
+                    }
+                )
+
+            st.session_state["rmo_pdf_docs"] = parsed_docs
+
+            if parsed_docs:
+                current_doc = parsed_docs[0]
+                previous_rows: list[dict[str, str]] = []
+                older_label = ""
+                newer_label = str(current_doc.get("name", ""))
+                compare_context = ""
+
+                if len(parsed_docs) == 2:
+                    file_names = [str(doc.get("name", "")) for doc in parsed_docs]
+                    older_idx, newer_idx, reason = infer_round_file_order(file_names)
+                    older_doc = parsed_docs[older_idx]
+                    newer_doc = parsed_docs[newer_idx]
+                    current_doc = newer_doc
+                    previous_rows = list(older_doc.get("rows", []))
+                    older_label = str(older_doc.get("name", "Older file"))
+                    newer_label = str(newer_doc.get("name", "Newer file"))
+                    compare_context = f"Comparison order detected by {reason}."
+
+                current_rows = list(current_doc.get("rows", []))
+                st.session_state["rmo_pdf_rows"] = current_rows
+                st.session_state["rmo_pdf_previous_rows"] = previous_rows
+                st.session_state["rmo_pdf_older_label"] = older_label
+                st.session_state["rmo_pdf_newer_label"] = newer_label
+                st.session_state["rmo_pdf_compare_context"] = compare_context
+
+                if current_rows:
+                    auto_output = _safe_build_all_beds(current_rows)
                     if auto_output:
+                        changes: list[dict[str, Any]] = []
+                        if previous_rows:
+                            changes = compute_snapshot_changes(
+                                _state_rows_from_source_rows(current_rows),
+                                _state_rows_from_source_rows(previous_rows),
+                            )
+                            _annotate_output_with_changes(auto_output, changes)
+                        st.session_state["rmo_pdf_changes"] = changes
                         st.session_state["rmo_pdf_output"] = auto_output
                         st.session_state["rmo_pdf_autobuilt_signature"] = rmo_signature
                 else:
                     st.session_state.pop("rmo_pdf_output", None)
+            else:
+                st.session_state.pop("rmo_pdf_output", None)
+
+        parsed_docs = st.session_state.get("rmo_pdf_docs", [])
+        for doc in parsed_docs:
+            doc_name = str(doc.get("name", "")).strip()
+            doc_rows = doc.get("rows", [])
+            row_count = len(doc_rows) if isinstance(doc_rows, list) else 0
+            blocks = int(doc.get("blocks", 0) or 0)
+            st.write(f"`{doc_name}` -> Patient packets detected = {blocks} | Beds parsed = {row_count}")
+            warnings = doc.get("warnings", [])
+            if isinstance(warnings, list) and warnings:
+                with st.expander(f"RMO parser warnings: {doc_name}", expanded=False):
+                    for warning in warnings:
+                        st.markdown(f"- {warning}")
+
+        compare_context = str(st.session_state.get("rmo_pdf_compare_context", "")).strip()
+        if compare_context:
+            older_label = str(st.session_state.get("rmo_pdf_older_label", "")).strip()
+            newer_label = str(st.session_state.get("rmo_pdf_newer_label", "")).strip()
+            st.caption(
+                f"Comparison mode: older `{older_label}` -> newer `{newer_label}`. {compare_context}"
+            )
+
+        if parsed_docs:
+            with st.expander("RMO parser debug (first 2 records per file)", expanded=False):
+                for doc in parsed_docs:
+                    st.markdown(f"**{doc.get('name', 'File')}**")
+                    st.json((doc.get("debug_blocks", []) or [])[:2])
+                    st.json((doc.get("rows", []) or [])[:2])
 
         rmo_rows = st.session_state.get("rmo_pdf_rows", [])
-        rmo_blocks = int(st.session_state.get("rmo_pdf_blocks", 0) or 0)
-        rmo_warnings = st.session_state.get("rmo_pdf_warnings", [])
-        rmo_debug_blocks = st.session_state.get("rmo_pdf_debug_blocks", [])
-
-        st.write(f"Patient packets detected = {rmo_blocks}")
-        st.write(f"Beds parsed = {len(rmo_rows)}")
-        if rmo_blocks > 0 and len(rmo_rows) == 0:
-            st.error(
-                "RMO packets were detected but no bed rows were parsed. "
-                "Open `RMO parser debug` below and share it so parser rules can be tuned."
-            )
-        if rmo_warnings:
-            with st.expander("RMO parser warnings", expanded=False):
-                for warning in rmo_warnings:
-                    st.markdown(f"- {warning}")
-        with st.expander("RMO parser debug (first 2 blocks)", expanded=False):
-            st.json(rmo_debug_blocks[:2])
-            st.json(rmo_rows[:2])
 
         if rmo_rows and st.button(
             "Regenerate output for ALL beds (from RMO PDF)",
@@ -2471,6 +2637,14 @@ with case_tab:
         ):
             rmo_output = _safe_build_all_beds(rmo_rows)
             if rmo_output:
+                previous_rows = st.session_state.get("rmo_pdf_previous_rows", [])
+                if isinstance(previous_rows, list) and previous_rows:
+                    changes = compute_snapshot_changes(
+                        _state_rows_from_source_rows(rmo_rows),
+                        _state_rows_from_source_rows(previous_rows),
+                    )
+                    st.session_state["rmo_pdf_changes"] = changes
+                    _annotate_output_with_changes(rmo_output, changes)
                 st.session_state["rmo_pdf_output"] = rmo_output
 
         rmo_output_rows = st.session_state.get("rmo_pdf_output", [])
@@ -2482,6 +2656,15 @@ with case_tab:
                 key_prefix="rmo_pdf",
                 source_rows=rmo_rows,
             )
+            rmo_changes = st.session_state.get("rmo_pdf_changes", [])
+            older_label = str(st.session_state.get("rmo_pdf_older_label", "")).strip()
+            newer_label = str(st.session_state.get("rmo_pdf_newer_label", "")).strip()
+            if isinstance(rmo_changes, list) and rmo_changes and older_label and newer_label:
+                _render_round_comparison_table(
+                    rmo_changes,
+                    older_label=older_label,
+                    newer_label=newer_label,
+                )
         elif rmo_rows:
             st.warning("Beds were parsed but output table is empty. Click `Regenerate output for ALL beds`.")
 
