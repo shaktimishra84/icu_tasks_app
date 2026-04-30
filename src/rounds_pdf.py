@@ -28,6 +28,7 @@ except Exception:
 
 OUTPUT_DIR = Path(__file__).resolve().parents[1] / "output"
 CARDS_PER_PAGE = 3
+PDF_MODE = "consultant"
 
 STATUS_ORDER = {
     "CRITICAL": 0,
@@ -51,6 +52,29 @@ GENERIC_PHRASES = [
     "continue supportive care",
     "monitor closely",
     "clinical correlation",
+]
+
+ABBREV_EXPANSIONS = {
+    "MV": "mechanical ventilation",
+    "NIV": "non-invasive ventilation",
+    "CKD": "chronic kidney disease",
+    "MHD": "maintenance hemodialysis",
+    "CVA": "cerebrovascular accident",
+    "T2DM": "type 2 diabetes mellitus",
+    "HTN": "hypertension",
+    "GCS": "Glasgow Coma Scale",
+}
+
+PRIORITY_URGENT_PENDING_HINTS = [
+    "ctpa",
+    "ct",
+    "mri",
+    "hrct",
+    "ugie",
+    "echo",
+    "report pending",
+    "pending report",
+    "consult",
 ]
 
 
@@ -122,6 +146,168 @@ def _shorten(text: str, limit: int) -> str:
     if len(cleaned) <= limit:
         return cleaned
     return cleaned[: max(0, limit - 3)].rstrip() + "..."
+
+
+def clean_text(
+    text: Any,
+    *,
+    sentence_case: bool = False,
+    max_len: int | None = None,
+    default: str = "Not documented.",
+) -> str:
+    raw = str(text or "").replace("\r", "\n")
+    raw = raw.replace("■", " ").replace("▪", " ").replace("●", " ").replace("•", " ")
+    raw = re.sub(r"\s*\|\s*", "; ", raw)
+    raw = re.sub(r"(?:(?<=^)|(?<=\s))\d+[.)](?=\s*[A-Za-z])", " ", raw)
+    cleaned = _normalize_text(raw).strip(" ;,.-")
+    if not cleaned:
+        return default
+
+    if sentence_case:
+        if cleaned.isupper():
+            cleaned = cleaned.lower()
+        if cleaned:
+            cleaned = cleaned[0].upper() + cleaned[1:]
+
+    if max_len and len(cleaned) > max_len:
+        cleaned = _shorten(cleaned, max_len)
+    return cleaned
+
+
+def normalize_diagnosis(text: Any) -> str:
+    diagnosis = clean_text(text, sentence_case=True, max_len=130, default="Not documented.")
+    for short, expanded in ABBREV_EXPANSIONS.items():
+        diagnosis = re.sub(rf"\b{re.escape(short)}\b", expanded, diagnosis, flags=re.IGNORECASE)
+    diagnosis = re.sub(r"\s+", " ", diagnosis).strip()
+    if diagnosis and diagnosis[-1] not in ".!?":
+        diagnosis += "."
+    return diagnosis or "Not documented."
+
+
+def classify_priority(row: dict[str, Any]) -> tuple[str, str, int]:
+    text = " ".join(
+        [
+            str(row.get("Diagnosis", "")),
+            str(row.get("Change since last round", "")),
+            str(row.get("_raw_new_issues", "")),
+            str(row.get("_raw_actions_done", "")),
+            str(row.get("_raw_plan_next_12h", "")),
+            str(row.get("Pending (verbatim)", "")),
+        ]
+    ).lower()
+    pending_items = _pending_items(row, max_items=8)
+
+    reasons: list[str] = []
+    score = 0
+
+    if "intub" in text:
+        reasons.append("New intubation")
+        score += 4
+    if "hypotension" in text or "shock" in text or bool(row.get("_is_vaso")):
+        reasons.append("Hypotension/shock risk")
+        score += 3
+    if "fio2" in text or "worsening oxygen" in text or "desat" in text:
+        reasons.append("Worsening oxygenation")
+        score += 3
+    if _is_new_admission(row) and bool(row.get("_is_mv")):
+        reasons.append("New admission on mechanical ventilation")
+        score += 4
+    if "extubat" in text:
+        reasons.append("Post-extubation watch")
+        score += 2
+    if "low gcs" in text or "gcs" in text:
+        reasons.append("Low Glasgow Coma Scale concern")
+        score += 2
+    if "anuria" in text or bool(row.get("_is_rrt")):
+        reasons.append("Anuria/dialysis issue")
+        score += 2
+    if str(row.get("Deterioration since last round", "")).strip().upper() == "YES":
+        reasons.append("Major deterioration vs previous round")
+        score += 3
+    if any(any(hint in item.lower() for hint in PRIORITY_URGENT_PENDING_HINTS) for item in pending_items):
+        reasons.append("Urgent pending report/consult")
+        score += 2
+
+    if _status_group_for_pdf(row) == "DECEASED":
+        return ("Closure", "Deceased case (closure update only)", 0)
+
+    if score >= 6:
+        label = "P1"
+    elif score >= 3:
+        label = "P2"
+    else:
+        label = "P3"
+
+    reason_line = "; ".join(_dedupe(reasons)[:2]) if reasons else "Active ICU follow-up."
+    return (label, clean_text(reason_line, sentence_case=True, max_len=120), score)
+
+
+def summarize_current_concern(row: dict[str, Any]) -> str:
+    if _status_group_for_pdf(row) == "DECEASED":
+        return "Declared deceased."
+
+    text = " ".join(
+        [
+            str(row.get("Deterioration reasons", "")),
+            str(row.get("_raw_new_issues", "")),
+            str(row.get("Pending (verbatim)", "")),
+        ]
+    ).strip()
+    if text:
+        first = _split_items(text, max_items=1)
+        if first:
+            return clean_text(first[0], sentence_case=True, max_len=120)
+
+    if bool(row.get("_is_mv")) and bool(row.get("_is_vaso")):
+        return "On respiratory and hemodynamic support."
+    if bool(row.get("_is_mv")):
+        return "Requires ongoing mechanical ventilation review."
+    if bool(row.get("_is_rrt")):
+        return "Renal support trajectory needs close follow-up."
+    if _pending_items(row, max_items=1):
+        return "Important pending items remain unresolved."
+    return "No major new concern documented."
+
+
+def generate_decision_points(row: dict[str, Any]) -> list[str]:
+    decision_points: list[str] = []
+    for item in _collect_today(row, max_items=6):
+        decision_points.append(clean_text(item, sentence_case=True, max_len=110))
+    for item in _pending_items(row, max_items=4):
+        decision_points.append(clean_text(f"Follow up {item}", sentence_case=True, max_len=110))
+
+    if not decision_points:
+        concern = summarize_current_concern(row)
+        if concern.lower() != "no major new concern documented.":
+            decision_points.append(clean_text(concern, sentence_case=True, max_len=110))
+
+    unique = _dedupe(decision_points)
+    return unique[:5]
+
+
+def generate_urgent_call_trigger(row: dict[str, Any]) -> str:
+    if _status_group_for_pdf(row) == "DECEASED":
+        return "Not applicable."
+
+    triggers: list[str] = []
+    text = " ".join(
+        [
+            str(row.get("Deterioration reasons", "")),
+            str(row.get("_raw_new_issues", "")),
+            str(row.get("Diagnosis", "")),
+        ]
+    ).lower()
+    if bool(row.get("_is_vaso")) or "shock" in text or "hypotension" in text:
+        triggers.append("MAP <65 or persistent hypotension")
+    if bool(row.get("_is_mv")) or bool(row.get("_is_niv")) or "oxygen" in text:
+        triggers.append("Rising oxygen requirement or worsening work of breathing")
+    if bool(row.get("_is_rrt")) or "anuria" in text:
+        triggers.append("Falling urine output or dialysis-related instability")
+    if "gcs" in text or "seizure" in text or "encephal" in text:
+        triggers.append("Drop in Glasgow Coma Scale or new seizure")
+    if not triggers:
+        triggers.append("Any sudden hemodynamic or respiratory deterioration")
+    return clean_text("; ".join(_dedupe(triggers)[:2]), sentence_case=True, max_len=130)
 
 
 def _parse_missing_items(text: str) -> list[tuple[str, str]]:
@@ -423,7 +609,7 @@ def _change_line(row: dict[str, Any]) -> str:
     if trend and trend.upper() not in {"STABLE", "NEW ADMISSION"}:
         return trend
     now = _collect_now(row, max_items=1)
-    return now[0] if now else "No major change"
+    return now[0] if now else "No major clinical change documented"
 
 
 def _must_do_line(row: dict[str, Any]) -> str:
@@ -601,7 +787,7 @@ def _comparison_table_rows(changes: list[dict[str, Any]]) -> list[list[str]]:
     return rows
 
 
-def generate_rounds_pdf(
+def _generate_raw_pdf(
     rows: list[dict[str, Any]],
     shift: str,
     detail_level: str = "max",
@@ -785,3 +971,388 @@ def generate_rounds_pdf(
 
     doc.build(story)
     return output_path.read_bytes(), output_path
+
+
+def _resolve_pdf_mode(detail_level: str | None) -> str:
+    level = _normalize_text(detail_level or "").lower()
+    if level in {"raw", "audit", "compact"}:
+        return "raw"
+    if level in {"consultant", "simple", "max", "default", ""}:
+        return "consultant"
+    return PDF_MODE
+
+
+def _consultant_support_line(row: dict[str, Any]) -> str:
+    supports: list[str] = []
+    if bool(row.get("_is_mv")):
+        supports.append("Mechanical ventilation")
+    if bool(row.get("_is_niv")):
+        supports.append("Non-invasive ventilation")
+    if bool(row.get("_is_vaso")):
+        supports.append("Vasopressor")
+    if bool(row.get("_is_rrt")):
+        supports.append("Dialysis")
+    if not supports:
+        return "None documented"
+    return ", ".join(supports)
+
+
+def _priority_review_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    selected: list[dict[str, Any]] = []
+    for row in rows:
+        status = _status_group_for_pdf(row)
+        if status == "DECEASED":
+            continue
+        priority, reason, score = classify_priority(row)
+        pending = _pending_items(row, max_items=3)
+        if score < 2 and not pending and priority == "P3":
+            continue
+        selected.append(
+            {
+                "priority": priority,
+                "score": score,
+                "bed": clean_text(row.get("Bed", ""), default="-"),
+                "reason": reason,
+                "support": _consultant_support_line(row),
+                "decision": clean_text(
+                    "; ".join(generate_decision_points(row)[:2]),
+                    sentence_case=True,
+                    max_len=140,
+                    default="Not documented.",
+                ),
+            }
+        )
+    selected.sort(key=lambda item: (-int(item.get("score", 0)), _bed_sort_value(item.get("bed", ""))))
+    return selected[:12]
+
+
+def _consultant_card_block(row: dict[str, Any], width: float, styles: dict[str, Any]) -> Table:
+    status = _status_group_for_pdf(row)
+    bed = clean_text(row.get("Bed", ""), default="-")
+    supports = _consultant_support_line(row)
+    diagnosis = normalize_diagnosis(row.get("Diagnosis", ""))
+    change = clean_text(_change_line(row), sentence_case=True, max_len=150, default="Not documented.")
+    concern = summarize_current_concern(row)
+    pending_items = _pending_items(row, max_items=2)
+    pending_text = "; ".join(pending_items) if pending_items else "None documented."
+    pending_text = clean_text(pending_text, sentence_case=True, max_len=120, default="None documented.")
+    urgent = generate_urgent_call_trigger(row)
+
+    points = generate_decision_points(row)[:4]
+    if not points:
+        points = ["Not documented."]
+
+    point_lines = "<br/>".join(f"- {escape(clean_text(point, sentence_case=True, max_len=110, default='Not documented.'))}" for point in points)
+    patient_id = clean_text(row.get("Patient ID", ""), default="Not documented")
+    header = (
+        f"<b>Bed {escape(bed)} | {escape(status.title())} | {escape(patient_id)}</b> "
+        f"<font color='#475569'>({escape(supports)})</font>"
+    )
+
+    card_lines = [
+        Paragraph(header, styles["card_head"]),
+        Paragraph(f"<b>Diagnosis:</b> {escape(diagnosis)}", styles["card_line"]),
+        Paragraph(f"<b>Change since last round:</b> {escape(change)}", styles["card_line"]),
+        Paragraph(f"<b>Current concern:</b> {escape(concern)}", styles["card_line"]),
+        Paragraph(f"<b>Consultant decision points:</b><br/>{point_lines}", styles["card_line"]),
+        Paragraph(f"<b>Pending:</b> {escape(pending_text)}", styles["card_line"]),
+        Paragraph(f"<b>Urgent call trigger:</b> {escape(urgent)}", styles["card_line"]),
+    ]
+
+    if status == "CRITICAL":
+        strip_color = "#ef4444"
+        fill_color = "#fef2f2"
+    elif status in {"SICK", "SERIOUS"}:
+        strip_color = "#f59e0b"
+        fill_color = "#fffbeb"
+    elif status == "DECEASED":
+        strip_color = "#6b7280"
+        fill_color = "#f3f4f6"
+    else:
+        strip_color = "#16a34a"
+        fill_color = "#f0fdf4"
+
+    strip_width = 4.2 * mm
+    card = Table([["", card_lines]], colWidths=[strip_width, width - strip_width])
+    card.setStyle(
+        TableStyle(
+            [
+                ("BACKGROUND", (0, 0), (0, 0), colors.HexColor(strip_color)),
+                ("BACKGROUND", (1, 0), (1, 0), colors.HexColor(fill_color)),
+                ("BOX", (0, 0), (-1, -1), 0.6, colors.HexColor("#d1d5db")),
+                ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                ("LEFTPADDING", (0, 0), (0, 0), 0),
+                ("RIGHTPADDING", (0, 0), (0, 0), 0),
+                ("LEFTPADDING", (1, 0), (1, 0), 6),
+                ("RIGHTPADDING", (1, 0), (1, 0), 6),
+                ("TOPPADDING", (1, 0), (1, 0), 6),
+                ("BOTTOMPADDING", (1, 0), (1, 0), 6),
+            ]
+        )
+    )
+    return card
+
+
+def _generate_consultant_pdf(
+    rows: list[dict[str, Any]],
+    shift: str,
+    run_date: date | None = None,
+    output_dir: Path = OUTPUT_DIR,
+    comparison_changes: list[dict[str, Any]] | None = None,
+    comparison_older_label: str = "",
+    comparison_newer_label: str = "",
+) -> tuple[bytes, Path]:
+    _require_reportlab()
+    normalized_shift = "Morning" if str(shift).strip().lower() == "morning" else "Evening"
+    use_date = run_date or datetime.now().date()
+    file_name = f"ICU_Rounds_{use_date.isoformat()}_{normalized_shift}.pdf"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    output_path = output_dir / file_name
+
+    doc = SimpleDocTemplate(
+        str(output_path),
+        pagesize=A4,
+        leftMargin=8 * mm,
+        rightMargin=8 * mm,
+        topMargin=9 * mm,
+        bottomMargin=9 * mm,
+    )
+
+    style_sheet = getSampleStyleSheet()
+    styles = {
+        "title": ParagraphStyle(
+            "consult_title",
+            parent=style_sheet["Heading1"],
+            fontName="Helvetica-Bold",
+            fontSize=16,
+            leading=19,
+            textColor=colors.HexColor("#111827"),
+            spaceAfter=5,
+        ),
+        "subhead": ParagraphStyle(
+            "consult_subhead",
+            parent=style_sheet["Normal"],
+            fontName="Helvetica",
+            fontSize=9.3,
+            leading=11.6,
+            textColor=colors.HexColor("#374151"),
+            spaceAfter=4,
+        ),
+        "section": ParagraphStyle(
+            "consult_section",
+            parent=style_sheet["Normal"],
+            fontName="Helvetica-Bold",
+            fontSize=10.3,
+            leading=12.2,
+            textColor=colors.HexColor("#111827"),
+            spaceAfter=3,
+        ),
+        "card_head": ParagraphStyle(
+            "consult_card_head",
+            parent=style_sheet["Normal"],
+            fontName="Helvetica-Bold",
+            fontSize=9.5,
+            leading=11.4,
+            textColor=colors.HexColor("#111827"),
+            spaceAfter=2,
+        ),
+        "card_line": ParagraphStyle(
+            "consult_card_line",
+            parent=style_sheet["Normal"],
+            fontName="Helvetica",
+            fontSize=8.4,
+            leading=10.4,
+            textColor=colors.HexColor("#111827"),
+            spaceAfter=1,
+        ),
+        "table_head": ParagraphStyle(
+            "consult_table_head",
+            parent=style_sheet["Normal"],
+            fontName="Helvetica-Bold",
+            fontSize=8.4,
+            leading=10.2,
+            textColor=colors.HexColor("#111827"),
+        ),
+        "table_cell": ParagraphStyle(
+            "consult_table_cell",
+            parent=style_sheet["Normal"],
+            fontName="Helvetica",
+            fontSize=8.0,
+            leading=9.8,
+            textColor=colors.HexColor("#111827"),
+        ),
+    }
+
+    sorted_rows = sorted(rows, key=_bed_sort_key_for_pdf)
+    total = len(sorted_rows)
+    critical = sum(1 for row in sorted_rows if _status_group_for_pdf(row) == "CRITICAL")
+    stable = sum(1 for row in sorted_rows if _status_group_for_pdf(row) not in {"CRITICAL", "DECEASED"})
+    mv = sum(1 for row in sorted_rows if bool(row.get("_is_mv")))
+    niv = sum(1 for row in sorted_rows if bool(row.get("_is_niv")))
+    dialysis = sum(1 for row in sorted_rows if bool(row.get("_is_rrt")))
+    vaso = sum(1 for row in sorted_rows if bool(row.get("_is_vaso")))
+    pending_major = sum(1 for row in sorted_rows if _pending_items(row, max_items=5))
+
+    story: list[Any] = []
+    story.append(Paragraph(f"ICU Command Summary - {use_date.isoformat()} - {normalized_shift}", styles["title"]))
+    story.append(
+        Paragraph(
+            (
+                f"Total patients: {total} | Critical: {critical} | Stable: {stable} | "
+                f"Mechanical ventilation: {mv} | NIV/CPAP: {niv} | Dialysis: {dialysis} | "
+                f"Vasopressor: {vaso} | Pending major issues: {pending_major}"
+            ),
+            styles["subhead"],
+        )
+    )
+
+    priority_rows = _priority_review_rows(sorted_rows)
+    story.append(Paragraph("Priority Review List", styles["section"]))
+    headers = [
+        "Priority",
+        "Bed",
+        "Reason for consultant review",
+        "Current support",
+        "Decision needed before next round",
+    ]
+    table_data: list[list[Any]] = [[Paragraph(f"<b>{escape(col)}</b>", styles["table_head"]) for col in headers]]
+    for item in priority_rows:
+        table_data.append(
+            [
+                Paragraph(escape(str(item.get("priority", "P3"))), styles["table_cell"]),
+                Paragraph(escape(str(item.get("bed", "-"))), styles["table_cell"]),
+                Paragraph(escape(_shorten(str(item.get("reason", "")), 120)), styles["table_cell"]),
+                Paragraph(escape(_shorten(str(item.get("support", "")), 90)), styles["table_cell"]),
+                Paragraph(escape(_shorten(str(item.get("decision", "")), 120)), styles["table_cell"]),
+            ]
+        )
+    if len(table_data) == 1:
+        table_data.append(
+            [
+                Paragraph("-", styles["table_cell"]),
+                Paragraph("-", styles["table_cell"]),
+                Paragraph("No high-priority patients identified from current data.", styles["table_cell"]),
+                Paragraph("-", styles["table_cell"]),
+                Paragraph("-", styles["table_cell"]),
+            ]
+        )
+
+    priority_table = Table(
+        table_data,
+        colWidths=[
+            doc.width * 0.10,
+            doc.width * 0.08,
+            doc.width * 0.31,
+            doc.width * 0.19,
+            doc.width * 0.32,
+        ],
+        repeatRows=1,
+    )
+    priority_style: list[tuple[Any, ...]] = [
+        ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#d1d5db")),
+        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f3f4f6")),
+        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+        ("LEFTPADDING", (0, 0), (-1, -1), 4),
+        ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+        ("TOPPADDING", (0, 0), (-1, -1), 4),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+    ]
+    for row_index, item in enumerate(priority_rows, start=1):
+        priority = str(item.get("priority", "")).upper()
+        if priority == "P1":
+            priority_style.append(("BACKGROUND", (0, row_index), (-1, row_index), colors.HexColor("#fef2f2")))
+        elif priority == "P2":
+            priority_style.append(("BACKGROUND", (0, row_index), (-1, row_index), colors.HexColor("#fffbeb")))
+        else:
+            priority_style.append(("BACKGROUND", (0, row_index), (-1, row_index), colors.HexColor("#f9fafb")))
+    priority_table.setStyle(TableStyle(priority_style))
+    story.append(priority_table)
+
+    story.append(PageBreak())
+    story.append(Paragraph("Bed-wise Consultant Cards (ascending bed order)", styles["title"]))
+    story.append(Paragraph("Compact bedside/telephone handover view.", styles["subhead"]))
+
+    for index, row in enumerate(sorted_rows):
+        story.append(_consultant_card_block(row, doc.width, styles))
+        if index < len(sorted_rows) - 1:
+            story.append(Spacer(1, 2.1 * mm))
+
+    comparison_rows = _comparison_table_rows(comparison_changes or [])
+    if comparison_rows:
+        story.append(PageBreak())
+        story.append(Paragraph("Appendix: Raw Comparison Data", styles["title"]))
+        if _normalize_text(comparison_older_label) and _normalize_text(comparison_newer_label):
+            story.append(
+                Paragraph(
+                    f"{escape(_normalize_text(comparison_older_label))} -> {escape(_normalize_text(comparison_newer_label))}",
+                    styles["subhead"],
+                )
+            )
+
+        headers = ["Bed", "Patient ID", "Trend", "Status change", "Supports delta", "Pending delta", "Key change"]
+        table_data = [[Paragraph(f"<b>{escape(col)}</b>", styles["table_head"]) for col in headers]]
+        for row in comparison_rows:
+            table_data.append([Paragraph(escape(_shorten(cell, 140)), styles["table_cell"]) for cell in row])
+        appendix_table = Table(
+            table_data,
+            colWidths=[
+                doc.width * 0.07,
+                doc.width * 0.12,
+                doc.width * 0.09,
+                doc.width * 0.16,
+                doc.width * 0.18,
+                doc.width * 0.19,
+                doc.width * 0.19,
+            ],
+            repeatRows=1,
+        )
+        appendix_table.setStyle(
+            TableStyle(
+                [
+                    ("GRID", (0, 0), (-1, -1), 0.3, colors.HexColor("#d1d5db")),
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#f3f4f6")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 3),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+                    ("TOPPADDING", (0, 0), (-1, -1), 3),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+                ]
+            )
+        )
+        story.append(appendix_table)
+
+    doc.build(story)
+    return output_path.read_bytes(), output_path
+
+
+def generate_rounds_pdf(
+    rows: list[dict[str, Any]],
+    shift: str,
+    detail_level: str = "consultant",
+    run_date: date | None = None,
+    output_dir: Path = OUTPUT_DIR,
+    comparison_changes: list[dict[str, Any]] | None = None,
+    comparison_older_label: str = "",
+    comparison_newer_label: str = "",
+) -> tuple[bytes, Path]:
+    mode = _resolve_pdf_mode(detail_level)
+    if mode == "raw":
+        return _generate_raw_pdf(
+            rows=rows,
+            shift=shift,
+            detail_level=detail_level,
+            run_date=run_date,
+            output_dir=output_dir,
+            comparison_changes=comparison_changes,
+            comparison_older_label=comparison_older_label,
+            comparison_newer_label=comparison_newer_label,
+        )
+    return _generate_consultant_pdf(
+        rows=rows,
+        shift=shift,
+        run_date=run_date,
+        output_dir=output_dir,
+        comparison_changes=comparison_changes,
+        comparison_older_label=comparison_older_label,
+        comparison_newer_label=comparison_newer_label,
+    )

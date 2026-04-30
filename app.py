@@ -1257,6 +1257,26 @@ def _clear_tracker_state() -> None:
         st.session_state.pop(key, None)
 
 
+def _clear_rmo_pdf_state() -> None:
+    for key in [
+        "rmo_pdf_signature",
+        "rmo_pdf_docs",
+        "rmo_pdf_rows",
+        "rmo_pdf_previous_rows",
+        "rmo_pdf_changes",
+        "rmo_pdf_older_label",
+        "rmo_pdf_newer_label",
+        "rmo_pdf_compare_context",
+        "rmo_pdf_output",
+        "rmo_pdf_autobuilt_signature",
+        "rmo_pdf_loaded_snapshot_id",
+        "rmo_pdf_restore_context",
+        "rounds_pdf_bytes_rmo_pdf",
+        "rounds_pdf_file_rmo_pdf",
+    ]:
+        st.session_state.pop(key, None)
+
+
 def _infer_round_date_shift_from_filename(filename: str) -> tuple[str, str]:
     lower_name = str(filename or "").lower()
     parsed_date: date | None = None
@@ -1299,6 +1319,86 @@ def _safe_build_all_beds(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
         with st.expander("Batch error details", expanded=False):
             st.exception(error)
         return []
+
+
+def _persist_rmo_docs_to_history(
+    history_store: ICUHistoryStore,
+    parsed_docs: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    saved: list[dict[str, Any]] = []
+    for doc in parsed_docs:
+        rows = doc.get("rows", [])
+        if not isinstance(rows, list) or not rows:
+            continue
+        snapshot_date = str(doc.get("snapshot_date", "")).strip()
+        snapshot_shift = str(doc.get("snapshot_shift", "")).strip()
+        file_hash = str(doc.get("file_hash", "")).strip() or "pdf-upload"
+        if not snapshot_date:
+            snapshot_date = date.today().isoformat()
+        if not snapshot_shift:
+            snapshot_shift = _default_round_shift()
+        try:
+            snapshot_id = history_store.save_snapshot(
+                snapshot_date=snapshot_date,
+                shift=snapshot_shift,
+                file_hash=file_hash,
+                table_rows=rows,
+            )
+        except Exception as error:
+            doc["save_error"] = str(error)
+            continue
+        doc["saved_snapshot_id"] = snapshot_id
+        snapshot = history_store.get_snapshot(snapshot_id)
+        if snapshot:
+            saved.append(snapshot)
+    return saved
+
+
+def _hydrate_rmo_from_snapshot(
+    history_store: ICUHistoryStore,
+    snapshot: dict[str, Any],
+    *,
+    context_prefix: str = "Loaded saved round",
+) -> bool:
+    snapshot_id = int(snapshot.get("snapshot_id", 0))
+    if snapshot_id <= 0:
+        return False
+
+    current_state_rows = history_store.get_snapshot_rows(snapshot_id)
+    if not current_state_rows:
+        return False
+
+    current_rows = _source_rows_from_state_rows(current_state_rows)
+    output_rows = _safe_build_all_beds(current_rows)
+    if not output_rows:
+        return False
+
+    previous_snapshot = history_store.get_previous_snapshot(snapshot_id)
+    previous_state_rows = (
+        history_store.get_snapshot_rows(int(previous_snapshot["snapshot_id"]))
+        if previous_snapshot
+        else []
+    )
+    previous_rows = _source_rows_from_state_rows(previous_state_rows)
+    changes = compute_snapshot_changes(current_state_rows, previous_state_rows)
+    _annotate_output_with_changes(output_rows, changes)
+
+    st.session_state["rmo_pdf_rows"] = current_rows
+    st.session_state["rmo_pdf_previous_rows"] = previous_rows
+    st.session_state["rmo_pdf_changes"] = changes
+    st.session_state["rmo_pdf_output"] = output_rows
+    st.session_state["rmo_pdf_signature"] = f"snapshot:{snapshot_id}"
+    st.session_state["rmo_pdf_autobuilt_signature"] = f"snapshot:{snapshot_id}"
+    st.session_state["rmo_pdf_loaded_snapshot_id"] = snapshot_id
+    st.session_state["rmo_pdf_older_label"] = _snapshot_label(previous_snapshot) if previous_snapshot else ""
+    st.session_state["rmo_pdf_newer_label"] = _snapshot_label(snapshot)
+    st.session_state["rmo_pdf_compare_context"] = (
+        f"{context_prefix}: {_snapshot_label(snapshot)}"
+    )
+    st.session_state["rmo_pdf_restore_context"] = (
+        f"{context_prefix}: {_snapshot_label(snapshot)} from local {history_store.db_path.name}"
+    )
+    return True
 
 
 def _show_extraction_error(filename: str, error: Exception) -> None:
@@ -1374,6 +1474,60 @@ def _render_deterioration_table(records: list[dict[str, Any]]) -> None:
         is_deteriorated = str(row.get("Deterioration since last round", "")).upper() == "YES"
         if is_deteriorated:
             return ["background-color: #fee2e2; color: #7f1d1d; font-weight: 600;" for _ in row]
+        return ["" for _ in row]
+
+    st.dataframe(
+        dataframe.style.apply(_row_style, axis=1),
+        use_container_width=True,
+        hide_index=True,
+    )
+
+
+def _render_priority_attention_table(records: list[dict[str, Any]]) -> None:
+    if not records:
+        return
+
+    rows: list[dict[str, Any]] = []
+    for record in records:
+        trend = str(record.get("Round trend", "")).strip().upper() or "STABLE"
+        has_pending = bool(_collect_pending_items(record, max_items=2))
+        is_critical = str(record.get("_status_group", "")).upper() == "CRITICAL"
+        if not (trend == "DETERIORATED" or is_critical or has_pending):
+            continue
+        rank = 0 if trend == "DETERIORATED" else 1 if is_critical else 2
+        rows.append(
+            {
+                "_rank": rank,
+                "Bed": str(record.get("Bed", "")).strip(),
+                "Patient ID": str(record.get("Patient ID", "")).strip(),
+                "Acuity": _acuity_label(record),
+                "Supports": _supports_schema(record),
+                "Trend": str(record.get("Round trend", "")).strip() or "STABLE",
+                "Change / Deterioration": _change_since_round(record),
+                "Must do before evening": _must_do_line(record),
+                "Pending": _pending_line(record),
+            }
+        )
+
+    if not rows:
+        st.caption("No priority-attention beds in current view.")
+        return
+
+    rows.sort(key=lambda row: (int(row.get("_rank", 9)), _bed_sort_value(row.get("Bed", "")), str(row.get("Patient ID", ""))))
+    display_rows = [{k: v for k, v in row.items() if k != "_rank"} for row in rows]
+
+    if pd is None:
+        st.table(display_rows)
+        return
+
+    dataframe = pd.DataFrame(display_rows)
+
+    def _row_style(row: Any) -> list[str]:
+        trend = str(row.get("Trend", "")).upper()
+        if trend == "DETERIORATED":
+            return ["background-color: #fef2f2; color: #7f1d1d; font-weight: 600;" for _ in row]
+        if str(row.get("Acuity", "")).lower() == "red":
+            return ["background-color: #fffbeb; color: #92400e;" for _ in row]
         return ["" for _ in row]
 
     st.dataframe(
@@ -2275,6 +2429,9 @@ def _render_all_beds_panel(
 
     all_beds_output = sorted(all_beds_output, key=_bed_sort_key)
     _render_summary_tiles(all_beds_output)
+    st.markdown("### Priority Attention")
+    st.caption("Deteriorated first, then critical, then beds with active pending items.")
+    _render_priority_attention_table(all_beds_output)
     has_discrepancy = _render_discrepancy_audit(source_rows or [], all_beds_output)
 
     has_round_trend = any(
@@ -2340,12 +2497,12 @@ def _render_all_beds_panel(
     )
     pdf_detail_mode = st.radio(
         "PDF format",
-        options=["Simple (recommended)", "Compact"],
+        options=["Consultant (recommended)", "Raw/Audit"],
         index=0,
         horizontal=True,
         key=f"rounds_pdf_detail_{key_prefix}",
     )
-    pdf_detail_value = "simple" if pdf_detail_mode.startswith("Simple") else "compact"
+    pdf_detail_value = "raw" if pdf_detail_mode.startswith("Raw") else "consultant"
 
     st.markdown("### Rounds PDF")
     pdf_bytes_key = f"rounds_pdf_bytes_{key_prefix}"
@@ -2515,12 +2672,54 @@ with resources_tab:
 
 with case_tab:
     st.subheader("ICU Tracker (PDF rounds dashboard)")
-    rmo_pdf_uploads = st.file_uploader(
-        "Upload 1 or 2 rounds PDFs (comparison table appears when 2 files are uploaded)",
-        type=["pdf"],
-        accept_multiple_files=True,
-        key="combined_rmo_pdf_upload",
-    )
+    upload_col, load_col, clear_col = st.columns([2.4, 1, 1])
+    with upload_col:
+        rmo_pdf_uploads = st.file_uploader(
+            "Upload 1 or 2 rounds PDFs (comparison appears automatically when 2 files are uploaded)",
+            type=["pdf"],
+            accept_multiple_files=True,
+            key="combined_rmo_pdf_upload",
+        )
+    with load_col:
+        manual_load = st.button(
+            "Load last saved round",
+            use_container_width=True,
+            key="load_last_saved_round",
+        )
+    with clear_col:
+        if st.button("Clear current view", use_container_width=True, key="clear_rmo_pdf_view"):
+            _clear_rmo_pdf_state()
+            try:
+                st.rerun()
+            except Exception:
+                pass
+
+    if manual_load:
+        latest_snapshot = history_store.get_latest_snapshot()
+        if latest_snapshot and _hydrate_rmo_from_snapshot(
+            history_store,
+            latest_snapshot,
+            context_prefix="Loaded last saved round",
+        ):
+            st.success(f"Loaded {_snapshot_label(latest_snapshot)} from local history.")
+        else:
+            st.warning("No saved rounds found yet for this ICU.")
+
+    if not rmo_pdf_uploads:
+        latest_snapshot = history_store.get_latest_snapshot()
+        latest_snapshot_id = int(latest_snapshot.get("snapshot_id", 0)) if latest_snapshot else 0
+        loaded_snapshot_id = int(st.session_state.get("rmo_pdf_loaded_snapshot_id", 0) or 0)
+        has_current_output = bool(st.session_state.get("rmo_pdf_output", []))
+        if latest_snapshot and (not has_current_output or loaded_snapshot_id != latest_snapshot_id):
+            _hydrate_rmo_from_snapshot(
+                history_store,
+                latest_snapshot,
+                context_prefix="Auto-restored last saved round",
+            )
+
+    restore_context = str(st.session_state.get("rmo_pdf_restore_context", "")).strip()
+    if restore_context:
+        st.caption(restore_context)
 
     if rmo_pdf_uploads:
         selected_pdf_files = list(rmo_pdf_uploads[:2])
@@ -2529,22 +2728,15 @@ with case_tab:
 
         rmo_signature = "|".join(_uploaded_file_fingerprint(upload) for upload in selected_pdf_files)
         if st.session_state.get("rmo_pdf_signature") != rmo_signature:
+            _clear_rmo_pdf_state()
             st.session_state["rmo_pdf_signature"] = rmo_signature
-            st.session_state.pop("rmo_pdf_docs", None)
-            st.session_state.pop("rmo_pdf_rows", None)
-            st.session_state.pop("rmo_pdf_previous_rows", None)
-            st.session_state.pop("rmo_pdf_changes", None)
-            st.session_state.pop("rmo_pdf_older_label", None)
-            st.session_state.pop("rmo_pdf_newer_label", None)
-            st.session_state.pop("rmo_pdf_compare_context", None)
-            st.session_state.pop("rmo_pdf_output", None)
-            st.session_state.pop("rounds_pdf_bytes_rmo_pdf", None)
-            st.session_state.pop("rounds_pdf_file_rmo_pdf", None)
 
             parsed_docs: list[dict[str, Any]] = []
             for upload in selected_pdf_files:
+                payload = upload.getvalue()
+                round_date, round_shift = _infer_round_date_shift_from_filename(upload.name)
                 try:
-                    parsed_rmo = parse_combined_rmo_pdf(upload.name, upload.getvalue())
+                    parsed_rmo = parse_combined_rmo_pdf(upload.name, payload)
                 except Exception as error:
                     st.error(f"Combined RMO PDF parse failed for `{upload.name}`: {error}")
                     continue
@@ -2562,29 +2754,44 @@ with case_tab:
                         "blocks": int(parsed_rmo.get("blocks_detected", 0) or 0),
                         "warnings": warning_raw if isinstance(warning_raw, list) else [],
                         "debug_blocks": debug_raw if isinstance(debug_raw, list) else [],
+                        "file_hash": hash_payload(payload),
+                        "snapshot_date": round_date,
+                        "snapshot_shift": round_shift,
                     }
                 )
 
             st.session_state["rmo_pdf_docs"] = parsed_docs
 
+            current_doc: dict[str, Any] | None = None
+            previous_rows: list[dict[str, str]] = []
+            older_label = ""
+            newer_label = ""
+            compare_context = ""
             if parsed_docs:
                 current_doc = parsed_docs[0]
-                previous_rows: list[dict[str, str]] = []
-                older_label = ""
-                newer_label = str(current_doc.get("name", ""))
-                compare_context = ""
+                newer_label = str(current_doc.get("name", "Current file"))
 
-                if len(parsed_docs) == 2:
-                    file_names = [str(doc.get("name", "")) for doc in parsed_docs]
-                    older_idx, newer_idx, reason = infer_round_file_order(file_names)
-                    older_doc = parsed_docs[older_idx]
-                    newer_doc = parsed_docs[newer_idx]
-                    current_doc = newer_doc
-                    previous_rows = list(older_doc.get("rows", []))
-                    older_label = str(older_doc.get("name", "Older file"))
-                    newer_label = str(newer_doc.get("name", "Newer file"))
-                    compare_context = f"Comparison order detected by {reason}."
+            if len(parsed_docs) == 2:
+                file_names = [str(doc.get("name", "")) for doc in parsed_docs]
+                older_idx, newer_idx, reason = infer_round_file_order(file_names)
+                older_doc = parsed_docs[older_idx]
+                newer_doc = parsed_docs[newer_idx]
+                if (
+                    str(older_doc.get("snapshot_date", "")).strip()
+                    and str(older_doc.get("snapshot_date", "")).strip() == str(newer_doc.get("snapshot_date", "")).strip()
+                    and str(older_doc.get("snapshot_shift", "")).strip().lower() == str(newer_doc.get("snapshot_shift", "")).strip().lower()
+                ):
+                    older_doc["snapshot_shift"] = "Morning"
+                    newer_doc["snapshot_shift"] = "Evening"
+                current_doc = newer_doc
+                previous_rows = list(older_doc.get("rows", []))
+                older_label = str(older_doc.get("name", "Older file"))
+                newer_label = str(newer_doc.get("name", "Newer file"))
+                compare_context = f"Comparison order detected by {reason}."
 
+            _persist_rmo_docs_to_history(history_store, parsed_docs)
+
+            if current_doc:
                 current_rows = list(current_doc.get("rows", []))
                 st.session_state["rmo_pdf_rows"] = current_rows
                 st.session_state["rmo_pdf_previous_rows"] = previous_rows
@@ -2601,14 +2808,15 @@ with case_tab:
                                 _state_rows_from_source_rows(current_rows),
                                 _state_rows_from_source_rows(previous_rows),
                             )
-                            _annotate_output_with_changes(auto_output, changes)
+                        _annotate_output_with_changes(auto_output, changes)
                         st.session_state["rmo_pdf_changes"] = changes
                         st.session_state["rmo_pdf_output"] = auto_output
                         st.session_state["rmo_pdf_autobuilt_signature"] = rmo_signature
+                        st.session_state["rmo_pdf_restore_context"] = (
+                            "Latest upload saved locally and loaded into dashboard."
+                        )
                 else:
                     st.session_state.pop("rmo_pdf_output", None)
-            else:
-                st.session_state.pop("rmo_pdf_output", None)
 
         parsed_docs = st.session_state.get("rmo_pdf_docs", [])
         for doc in parsed_docs:
@@ -2616,7 +2824,12 @@ with case_tab:
             doc_rows = doc.get("rows", [])
             row_count = len(doc_rows) if isinstance(doc_rows, list) else 0
             blocks = int(doc.get("blocks", 0) or 0)
-            st.write(f"`{doc_name}` -> Patient packets detected = {blocks} | Beds parsed = {row_count}")
+            saved_id = int(doc.get("saved_snapshot_id", 0) or 0)
+            save_error = str(doc.get("save_error", "")).strip()
+            save_meta = f" | Saved snapshot ID: {saved_id}" if saved_id > 0 else ""
+            st.write(f"`{doc_name}` -> Patient packets detected = {blocks} | Beds parsed = {row_count}{save_meta}")
+            if save_error:
+                st.warning(f"Could not save `{doc_name}` to local history: {save_error}")
             warnings = doc.get("warnings", [])
             if isinstance(warnings, list) and warnings:
                 with st.expander(f"RMO parser warnings: {doc_name}", expanded=False):
@@ -2638,46 +2851,50 @@ with case_tab:
                     st.json((doc.get("debug_blocks", []) or [])[:2])
                     st.json((doc.get("rows", []) or [])[:2])
 
-        rmo_rows = st.session_state.get("rmo_pdf_rows", [])
-
-        if rmo_rows and st.button(
-            "Regenerate output for ALL beds (from RMO PDF)",
-            type="primary",
-            use_container_width=True,
-            key="generate_all_beds_rmo_pdf",
-        ):
-            rmo_output = _safe_build_all_beds(rmo_rows)
-            if rmo_output:
-                previous_rows = st.session_state.get("rmo_pdf_previous_rows", [])
-                if isinstance(previous_rows, list) and previous_rows:
-                    changes = compute_snapshot_changes(
-                        _state_rows_from_source_rows(rmo_rows),
-                        _state_rows_from_source_rows(previous_rows),
-                    )
-                    st.session_state["rmo_pdf_changes"] = changes
-                    _annotate_output_with_changes(rmo_output, changes)
-                st.session_state["rmo_pdf_output"] = rmo_output
-
-        rmo_output_rows = st.session_state.get("rmo_pdf_output", [])
-        rmo_changes = st.session_state.get("rmo_pdf_changes", [])
-        older_label = str(st.session_state.get("rmo_pdf_older_label", "")).strip()
-        newer_label = str(st.session_state.get("rmo_pdf_newer_label", "")).strip()
-        if rmo_output_rows:
-            if st.session_state.get("rmo_pdf_autobuilt_signature") == rmo_signature:
-                st.success("Auto-generated bed-wise output from uploaded RMO PDF.")
-            _render_all_beds_panel(
-                rmo_output_rows,
-                key_prefix="rmo_pdf",
-                source_rows=rmo_rows,
-                comparison_changes=rmo_changes if isinstance(rmo_changes, list) else [],
-                comparison_older_label=older_label,
-                comparison_newer_label=newer_label,
-            )
-            if isinstance(rmo_changes, list) and rmo_changes and older_label and newer_label:
-                _render_round_comparison_table(
-                    rmo_changes,
-                    older_label=older_label,
-                    newer_label=newer_label,
+    rmo_rows = st.session_state.get("rmo_pdf_rows", [])
+    if rmo_rows and st.button(
+        "Regenerate output for ALL beds (from current snapshot)",
+        type="primary",
+        use_container_width=True,
+        key="generate_all_beds_rmo_pdf",
+    ):
+        rmo_output = _safe_build_all_beds(rmo_rows)
+        if rmo_output:
+            previous_rows = st.session_state.get("rmo_pdf_previous_rows", [])
+            changes: list[dict[str, Any]] = []
+            if isinstance(previous_rows, list) and previous_rows:
+                changes = compute_snapshot_changes(
+                    _state_rows_from_source_rows(rmo_rows),
+                    _state_rows_from_source_rows(previous_rows),
                 )
-        elif rmo_rows:
-            st.warning("Beds were parsed but output table is empty. Click `Regenerate output for ALL beds`.")
+            st.session_state["rmo_pdf_changes"] = changes
+            _annotate_output_with_changes(rmo_output, changes)
+            st.session_state["rmo_pdf_output"] = rmo_output
+
+    rmo_output_rows = st.session_state.get("rmo_pdf_output", [])
+    rmo_changes = st.session_state.get("rmo_pdf_changes", [])
+    older_label = str(st.session_state.get("rmo_pdf_older_label", "")).strip()
+    newer_label = str(st.session_state.get("rmo_pdf_newer_label", "")).strip()
+    if rmo_output_rows:
+        if str(st.session_state.get("rmo_pdf_autobuilt_signature", "")).startswith("snapshot:"):
+            st.success("Loaded bed-wise output from your last saved round.")
+        elif rmo_pdf_uploads:
+            st.success("Auto-generated bed-wise output from uploaded RMO PDF.")
+        _render_all_beds_panel(
+            rmo_output_rows,
+            key_prefix="rmo_pdf",
+            source_rows=rmo_rows,
+            comparison_changes=rmo_changes if isinstance(rmo_changes, list) else [],
+            comparison_older_label=older_label,
+            comparison_newer_label=newer_label,
+        )
+        if isinstance(rmo_changes, list) and rmo_changes and older_label and newer_label:
+            _render_round_comparison_table(
+                rmo_changes,
+                older_label=older_label,
+                newer_label=newer_label,
+            )
+    elif rmo_rows:
+        st.warning("Beds were parsed but output table is empty. Click `Regenerate output for ALL beds`.")
+    else:
+        st.info("Upload a rounds PDF to start, or click `Load last saved round`.")
