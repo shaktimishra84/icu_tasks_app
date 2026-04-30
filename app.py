@@ -1773,11 +1773,16 @@ def _render_tracker_views(
         ["Dashboard", "Patient course", "Changes"]
     )
     with dashboard_tab:
+        older_label = _snapshot_label(tracker_previous_snapshot) if tracker_previous_snapshot else ""
+        newer_label = _snapshot_label(tracker_current_snapshot) if tracker_current_snapshot else ""
         _render_all_beds_panel(
             tracker_output,
             key_prefix="round_tracker",
             source_rows=tracker_source_rows,
             show_course_button=True,
+            comparison_changes=tracker_changes if isinstance(tracker_changes, list) else [],
+            comparison_older_label=older_label,
+            comparison_newer_label=newer_label,
         )
     with course_tab:
         _render_patient_course_tab(
@@ -2261,6 +2266,9 @@ def _render_all_beds_panel(
     key_prefix: str = "default",
     source_rows: list[dict[str, Any]] | None = None,
     show_course_button: bool = False,
+    comparison_changes: list[dict[str, Any]] | None = None,
+    comparison_older_label: str = "",
+    comparison_newer_label: str = "",
 ) -> None:
     if not all_beds_output:
         return
@@ -2353,6 +2361,9 @@ def _render_all_beds_panel(
                 all_beds_output,
                 shift=rounds_shift,
                 detail_level=pdf_detail_value,
+                comparison_changes=comparison_changes or [],
+                comparison_older_label=comparison_older_label,
+                comparison_newer_label=comparison_newer_label,
             )
         except RuntimeError as error:
             st.error(f"Rounds PDF generation failed: {error}")
@@ -2648,6 +2659,9 @@ with case_tab:
                 st.session_state["rmo_pdf_output"] = rmo_output
 
         rmo_output_rows = st.session_state.get("rmo_pdf_output", [])
+        rmo_changes = st.session_state.get("rmo_pdf_changes", [])
+        older_label = str(st.session_state.get("rmo_pdf_older_label", "")).strip()
+        newer_label = str(st.session_state.get("rmo_pdf_newer_label", "")).strip()
         if rmo_output_rows:
             if st.session_state.get("rmo_pdf_autobuilt_signature") == rmo_signature:
                 st.success("Auto-generated bed-wise output from uploaded RMO PDF.")
@@ -2655,10 +2669,10 @@ with case_tab:
                 rmo_output_rows,
                 key_prefix="rmo_pdf",
                 source_rows=rmo_rows,
+                comparison_changes=rmo_changes if isinstance(rmo_changes, list) else [],
+                comparison_older_label=older_label,
+                comparison_newer_label=newer_label,
             )
-            rmo_changes = st.session_state.get("rmo_pdf_changes", [])
-            older_label = str(st.session_state.get("rmo_pdf_older_label", "")).strip()
-            newer_label = str(st.session_state.get("rmo_pdf_newer_label", "")).strip()
             if isinstance(rmo_changes, list) and rmo_changes and older_label and newer_label:
                 _render_round_comparison_table(
                     rmo_changes,

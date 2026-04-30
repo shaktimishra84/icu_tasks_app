@@ -11,13 +11,14 @@ try:
     from reportlab.lib.pagesizes import A4
     from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
     from reportlab.lib.units import mm
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from reportlab.platypus import PageBreak, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 except Exception:
     colors = None
     A4 = None
     ParagraphStyle = None
     getSampleStyleSheet = None
     mm = None
+    PageBreak = None
     Paragraph = None
     SimpleDocTemplate = None
     Spacer = None
@@ -558,12 +559,57 @@ def _dashboard_counts(rows: list[dict[str, Any]]) -> dict[str, int]:
     }
 
 
+def _comparison_table_rows(changes: list[dict[str, Any]]) -> list[list[str]]:
+    rows: list[list[str]] = []
+    for change in sorted(changes, key=lambda item: (_bed_sort_value(item.get("bed", "")), str(item.get("patient_id", "")))):
+        supports_added = list(change.get("supports_added", []) or [])
+        supports_removed = list(change.get("supports_removed", []) or [])
+        supports_parts: list[str] = []
+        if supports_added:
+            supports_parts.append("+" + ", ".join(supports_added))
+        if supports_removed:
+            supports_parts.append("-" + ", ".join(supports_removed))
+        supports_delta = " ; ".join(supports_parts) if supports_parts else "-"
+
+        pending_new = list(change.get("pending_new", []) or [])
+        pending_resolved = list(change.get("pending_resolved", []) or [])
+        pending_parts: list[str] = []
+        if pending_new:
+            pending_parts.append("new: " + " | ".join(pending_new[:2]))
+        if pending_resolved:
+            pending_parts.append("resolved: " + " | ".join(pending_resolved[:2]))
+        pending_delta = " ; ".join(pending_parts) if pending_parts else "-"
+
+        previous_status = _normalize_text(change.get("previous_status_group", ""))
+        current_status = _normalize_text(change.get("current_status_group", "")) or "-"
+        status_change = f"{previous_status} -> {current_status}" if previous_status else f"NEW -> {current_status}"
+
+        summary_lines = [str(line).strip() for line in list(change.get("summary_lines", [])) if str(line).strip()]
+        key_change = " ; ".join(summary_lines[:2]) if summary_lines else "-"
+
+        rows.append(
+            [
+                _normalize_text(change.get("bed", "")),
+                _normalize_text(change.get("patient_id", "")),
+                _normalize_text(change.get("trend", "")),
+                status_change,
+                supports_delta,
+                pending_delta,
+                key_change,
+            ]
+        )
+    return rows
+
+
 def generate_rounds_pdf(
     rows: list[dict[str, Any]],
     shift: str,
     detail_level: str = "max",
     run_date: date | None = None,
     output_dir: Path = OUTPUT_DIR,
+    comparison_changes: list[dict[str, Any]] | None = None,
+    comparison_older_label: str = "",
+    comparison_newer_label: str = "",
 ) -> tuple[bytes, Path]:
     _require_reportlab()
     simple_mode = str(detail_level).strip().lower() in {"simple", "max", "default"}
@@ -626,6 +672,21 @@ def generate_rounds_pdf(
             textColor=colors.HexColor("#0f172a"),
             spaceAfter=0.4,
         ),
+        "cmp_head": ParagraphStyle(
+            "cmp_head",
+            parent=style_sheet["Normal"],
+            fontSize=7.3 if simple_mode else 6.8,
+            leading=8.4 if simple_mode else 7.8,
+            fontName="Helvetica-Bold",
+            textColor=colors.HexColor("#0f172a"),
+        ),
+        "cmp_cell": ParagraphStyle(
+            "cmp_cell",
+            parent=style_sheet["Normal"],
+            fontSize=6.9 if simple_mode else 6.4,
+            leading=7.8 if simple_mode else 7.2,
+            textColor=colors.HexColor("#0f172a"),
+        ),
     }
 
     sorted_rows = sorted(rows, key=_bed_sort_key_for_pdf)
@@ -659,6 +720,68 @@ def generate_rounds_pdf(
         story.append(_card_block(row, doc.width, styles))
         if idx < len(sorted_rows) - 1:
             story.append(Spacer(1, 1.6 * mm))
+
+    comparison_rows = _comparison_table_rows(comparison_changes or [])
+    if comparison_rows:
+        story.append(PageBreak())
+        story.append(Paragraph("Round Comparison Table", styles["title"]))
+        if _normalize_text(comparison_older_label) and _normalize_text(comparison_newer_label):
+            story.append(
+                Paragraph(
+                    f"{escape(_normalize_text(comparison_older_label))} -> {escape(_normalize_text(comparison_newer_label))}",
+                    styles["subhead"],
+                )
+            )
+        else:
+            story.append(Paragraph("Bed-wise delta overview", styles["subhead"]))
+
+        headers = [
+            "Bed",
+            "Patient ID",
+            "Trend",
+            "Status change",
+            "Supports delta",
+            "Pending delta",
+            "Key change",
+        ]
+        table_data: list[list[Any]] = [
+            [Paragraph(f"<b>{escape(col)}</b>", styles["cmp_head"]) for col in headers]
+        ]
+        for row in comparison_rows:
+            table_data.append([Paragraph(escape(_shorten(cell, 120)), styles["cmp_cell"]) for cell in row])
+
+        comparison_table = Table(
+            table_data,
+            colWidths=[
+                doc.width * 0.06,
+                doc.width * 0.11,
+                doc.width * 0.08,
+                doc.width * 0.16,
+                doc.width * 0.18,
+                doc.width * 0.20,
+                doc.width * 0.21,
+            ],
+            repeatRows=1,
+        )
+        style_ops: list[tuple[Any, ...]] = [
+            ("GRID", (0, 0), (-1, -1), 0.35, colors.HexColor("#cbd5e1")),
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#e2e8f0")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("LEFTPADDING", (0, 0), (-1, -1), 3),
+            ("RIGHTPADDING", (0, 0), (-1, -1), 3),
+            ("TOPPADDING", (0, 0), (-1, -1), 3),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 3),
+        ]
+        for row_index, row in enumerate(comparison_rows, start=1):
+            trend = _normalize_text(row[2]).upper()
+            if trend == "DETERIORATED":
+                style_ops.append(("BACKGROUND", (0, row_index), (-1, row_index), colors.HexColor("#fee2e2")))
+            elif trend == "IMPROVED":
+                style_ops.append(("BACKGROUND", (0, row_index), (-1, row_index), colors.HexColor("#dcfce7")))
+            elif trend == "NEW ADMISSION":
+                style_ops.append(("BACKGROUND", (0, row_index), (-1, row_index), colors.HexColor("#dbeafe")))
+        comparison_table.setStyle(TableStyle(style_ops))
+        story.append(comparison_table)
 
     doc.build(story)
     return output_path.read_bytes(), output_path

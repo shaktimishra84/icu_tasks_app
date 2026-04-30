@@ -6,6 +6,7 @@ from src.rounds_pdf import (
     _bed_sort_key_for_pdf,
     _build_pending_tracker_rows,
     _care_check_items,
+    _comparison_table_rows,
     _missing_category_items,
     _pending_items,
     _status_group_for_pdf,
@@ -96,6 +97,34 @@ class RoundsPdfRulesTests(unittest.TestCase):
         ordered = sorted(rows, key=_triage_sort_key)
         self.assertEqual(ordered[0]["Patient ID"], "P-20")
         self.assertEqual(ordered[1]["Patient ID"], "P-3")
+
+    def test_comparison_table_rows_are_bed_sorted(self) -> None:
+        changes = [
+            {"bed": "10", "patient_id": "P10", "trend": "STABLE"},
+            {"bed": "2", "patient_id": "P2", "trend": "DETERIORATED"},
+            {"bed": "1", "patient_id": "P1", "trend": "IMPROVED"},
+        ]
+        table_rows = _comparison_table_rows(changes)
+        self.assertEqual([row[0] for row in table_rows], ["1", "2", "10"])
+
+    def test_comparison_table_rows_include_deltas(self) -> None:
+        changes = [
+            {
+                "bed": "5",
+                "patient_id": "P5",
+                "trend": "DETERIORATED",
+                "previous_status_group": "SICK",
+                "current_status_group": "CRITICAL",
+                "supports_added": ["MV"],
+                "pending_new": ["CTPA report pending"],
+                "summary_lines": ["Status: SICK -> CRITICAL"],
+            }
+        ]
+        table_rows = _comparison_table_rows(changes)
+        self.assertEqual(len(table_rows), 1)
+        self.assertIn("SICK -> CRITICAL", table_rows[0][3])
+        self.assertIn("+MV", table_rows[0][4])
+        self.assertIn("new: CTPA report pending", table_rows[0][5])
 
 
 if __name__ == "__main__":
