@@ -1,0 +1,545 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>ICU Rounds</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@300;400;500;600;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #f1f4f9;
+      --ink: #1e293b;
+      --muted: #475569;
+      --line: #dbe3ef;
+      --card: #ffffff;
+      --critical: #ef4444;
+      --amber: #f59e0b;
+      --green: #10b981;
+      --blue: #2563eb;
+      --purple: #7c3aed;
+      --cyan: #0e7490;
+      --orange: #ea580c;
+      --o2: #059669;
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font: 400 14px/1.45 "IBM Plex Sans", sans-serif;
+    }
+    .page {
+      max-width: 900px;
+      margin: 0 auto;
+      padding: 24px;
+    }
+
+    .header {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr;
+      gap: 12px;
+      align-items: center;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px 16px;
+      box-shadow: 0 8px 18px rgba(15, 23, 42, 0.05);
+    }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-weight: 700;
+    }
+    .cross {
+      color: #dc2626;
+      font-size: 20px;
+      line-height: 1;
+    }
+    .brand-icon {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      background: #fee2e2;
+      color: #b91c1c;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .round-title {
+      text-align: center;
+      font-weight: 700;
+      font-size: 18px;
+      letter-spacing: 0.01em;
+    }
+    .unit-chip-wrap {
+      display: flex;
+      justify-content: flex-end;
+    }
+    .unit-chip {
+      border: 1px solid #cbd5e1;
+      background: #e2e8f0;
+      color: #0f172a;
+      border-radius: 999px;
+      padding: 5px 12px;
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.03em;
+    }
+
+    .stats {
+      margin-top: 12px;
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 8px;
+      background: #1e293b;
+      border-radius: 10px;
+      padding: 10px;
+      color: #fff;
+    }
+    .stat {
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      border-radius: 8px;
+      padding: 8px 8px;
+      text-align: center;
+      background: rgba(255, 255, 255, 0.03);
+    }
+    .stat .label {
+      display: block;
+      font-size: 11px;
+      opacity: 0.88;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .stat .value {
+      font-size: 19px;
+      line-height: 1.1;
+      font-weight: 700;
+    }
+    .n-red { color: #fca5a5; }
+    .n-blue { color: #93c5fd; }
+    .n-orange { color: #fdba74; }
+    .n-amber { color: #fcd34d; }
+    .n-green { color: #86efac; }
+
+    .section {
+      margin-top: 20px;
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 14px;
+      box-shadow: 0 8px 18px rgba(15, 23, 42, 0.05);
+    }
+    .section-title {
+      margin: 0 0 6px;
+      font-size: 20px;
+      line-height: 1.2;
+    }
+    .priority-title { color: #dc2626; }
+    .compare-title { color: #1d4ed8; }
+    .subtitle {
+      margin: 0 0 10px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .table-wrap { overflow-x: auto; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    thead th {
+      background: #0f172a;
+      color: #f8fafc;
+      font-weight: 600;
+      font-size: 12px;
+      text-align: left;
+      padding: 9px 8px;
+      border-bottom: 1px solid #1f2937;
+      white-space: nowrap;
+    }
+    tbody td {
+      padding: 8px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: top;
+      font-size: 12.5px;
+    }
+    tbody tr:last-child td { border-bottom: none; }
+    .row-deteriorated { background: #fef2f2; }
+    .row-critical { background: #fffbeb; }
+
+    .mono {
+      font-family: "IBM Plex Mono", monospace;
+      font-size: 12px;
+    }
+    .badge {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 2px 9px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      color: #fff;
+      white-space: nowrap;
+    }
+    .b-critical { background: var(--critical); }
+    .b-stable { background: var(--amber); color: #111827; }
+    .t-deteriorated { background: #dc2626; }
+    .t-improved { background: #16a34a; }
+    .t-new { background: #2563eb; }
+    .t-stable { background: #6b7280; }
+    .support {
+      display: inline-block;
+      border-radius: 999px;
+      padding: 2px 8px;
+      margin: 0 4px 4px 0;
+      color: #fff;
+      font-size: 11px;
+      font-weight: 600;
+    }
+    .s-mv { background: var(--blue); }
+    .s-niv { background: var(--purple); }
+    .s-rrt { background: var(--cyan); }
+    .s-vaso { background: var(--orange); }
+    .s-o2 { background: var(--o2); }
+    .delta { font-weight: 600; margin-right: 6px; }
+    .delta.add { color: #15803d; }
+    .delta.remove { color: #b91c1c; }
+
+    .cards {
+      margin-top: 8px;
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+    }
+    .card {
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      border-left: 6px solid var(--amber);
+      padding: 12px;
+      break-inside: avoid;
+      box-shadow: 0 8px 18px rgba(15, 23, 42, 0.05);
+    }
+    .c-critical { border-left-color: var(--critical); }
+    .c-improved { border-left-color: var(--green); }
+    .c-stable { border-left-color: var(--amber); }
+    .card-head {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      padding-bottom: 8px;
+      border-bottom: 1px solid var(--line);
+    }
+    .bed-big {
+      font-size: 21px;
+      font-weight: 700;
+      line-height: 1.1;
+      margin-right: 4px;
+    }
+    .card-body {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      margin-top: 10px;
+    }
+    .panel h4 {
+      margin: 0 0 5px;
+      font-size: 12px;
+      color: #334155;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+    .panel p {
+      margin: 0 0 8px;
+      font-size: 13px;
+      line-height: 1.4;
+    }
+    .box {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 8px;
+      margin-bottom: 8px;
+    }
+    .box.change {
+      background: #fff7ed;
+      border-color: #fed7aa;
+    }
+    .box.must {
+      background: #fef2f2;
+      border-color: #fecaca;
+    }
+    .card-foot {
+      margin-top: 8px;
+      padding-top: 8px;
+      border-top: 1px solid var(--line);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 12px;
+      color: var(--muted);
+    }
+    .pending-badge {
+      border-radius: 999px;
+      background: #fef3c7;
+      color: #92400e;
+      padding: 3px 8px;
+      font-weight: 600;
+      font-size: 11px;
+    }
+    .pending-none {
+      background: #e2e8f0;
+      color: #475569;
+    }
+
+    .doc-footer {
+      margin-top: 16px;
+      text-align: center;
+      color: #64748b;
+      font-size: 12px;
+    }
+    .print-bar {
+      margin-top: 12px;
+      text-align: center;
+    }
+    .print-btn {
+      border: 1px solid #94a3b8;
+      background: #0f172a;
+      color: #fff;
+      padding: 8px 16px;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    @media (max-width: 900px) {
+      .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .header { grid-template-columns: 1fr; text-align: left; }
+      .unit-chip-wrap { justify-content: flex-start; }
+      .card-body { grid-template-columns: 1fr; }
+    }
+
+    @media print {
+      body { background: #fff; color: #111827; }
+      .page { max-width: 100%; padding: 0; }
+      .no-print { display: none !important; }
+      * { box-shadow: none !important; }
+      .section, .header, .stats, .card { break-inside: avoid; background: #fff; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="header">
+      <div class="brand"><span class="cross">✚</span><span class="brand-icon">⚕</span><span>ICU Task Assistant</span></div>
+      <div class="round-title">ICU Rounds — Morning — 30 April 2026</div>
+      <div class="unit-chip-wrap"><span class="unit-chip">MICU</span></div>
+    </header>
+
+    <section class="stats">
+      <div class="stat"><span class="label">Beds</span><span class="value">15</span></div>
+      <div class="stat"><span class="label">Critical</span><span class="value n-red">8</span></div>
+      <div class="stat"><span class="label">MV</span><span class="value n-blue">5</span></div>
+      <div class="stat"><span class="label">Vaso</span><span class="value n-orange">1</span></div>
+      <div class="stat"><span class="label">Pending</span><span class="value n-amber">4</span></div>
+      <div class="stat"><span class="label">New Admissions</span><span class="value n-green">3</span></div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title priority-title">⚡ Priority Attention</h2>
+      <div class="table-wrap">
+        <table id="priorityTable"></table>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title compare-title">📊 Round Comparison</h2>
+      <p class="subtitle">Previous snapshot → Current</p>
+      <div class="table-wrap">
+        <table id="compareTable"></table>
+      </div>
+    </section>
+
+    <section class="section">
+      <h2 class="section-title">Bed Cards (15)</h2>
+      <div id="cards" class="cards"></div>
+    </section>
+
+    <p class="doc-footer">Generated: 30 April 2026 · Morning Rounds · MICU · ICU Task Assistant</p>
+    <div class="print-bar no-print"><button class="print-btn" type="button" onclick="window.print()">Print</button></div>
+  </main>
+
+  <script>
+    const patients = [
+      { bed:"1", patientId:"202604070002", diagnosis:"Critical neurologic status with low GCS", acuity:"CRITICAL", supports:["NIV"], trend:"STABLE", change:"Low GCS", mustDo:"Critical low GCS close monitoring, daily PT", attending:"Dr S.B. Mishra", keyLabs:"GCS trend and neuro exam focus", escalation:"Escalate for worsening sensorium", pendingTasks:[], statusChange:"CRITICAL → CRITICAL", supportsDelta:"—", keyChange:"Low GCS persists" },
+      { bed:"2", patientId:"202603160077", diagnosis:"Respiratory failure with low GCS and hypotension", acuity:"CRITICAL", supports:["MV","NIV"], trend:"IMPROVED", change:"VASO removed", mustDo:"Critical low GCS, hypotension conservative management", attending:"Dr S.B. Mishra", keyLabs:"BP trend, oxygenation target", escalation:"Escalate if hypotension recurs", pendingTasks:[], statusChange:"CRITICAL → CRITICAL", supportsDelta:"-VASO", keyChange:"Hemodynamics improved after VASO off" },
+      { bed:"4", patientId:"8658080831", diagnosis:"Post-critical neuro-infective workup under observation", acuity:"STABLE", supports:[], trend:"IMPROVED", change:"Status: CRITICAL→OTHER", mustDo:"Guarded close monitoring. CSF ADA report due", attending:"Dr S.B. Mishra", keyLabs:"Await CSF ADA correlation", escalation:"Escalate if fever or neuro decline", pendingTasks:["CSF ADA report due"], statusChange:"CRITICAL → OTHER", supportsDelta:"-NIV", keyChange:"Status de-escalated" },
+      { bed:"5", patientId:"202604260005", diagnosis:"Critical renal failure with anuria", acuity:"CRITICAL", supports:["RRT"], trend:"STABLE", change:"Anuria nephro review", mustDo:"Critical anuria monitor vitals", attending:"Dr S.B. Mishra", keyLabs:"Urine output, renal profile", escalation:"Escalate if hemodynamic instability", pendingTasks:[], statusChange:"CRITICAL → CRITICAL", supportsDelta:"—", keyChange:"Anuria persists on renal support" },
+      { bed:"6", patientId:"202604210002", diagnosis:"Type II respiratory failure (new admission)", acuity:"STABLE", supports:["NIV"], trend:"NEW ADMISSION", change:"Supports added: NIV", mustDo:"Guarded Type II RF arrange BiPAP, plan 2D echo", attending:"Dr Satyajit", keyLabs:"ABG follow-up after NIV", escalation:"Escalate if respiratory fatigue", pendingTasks:["2D echo pending"], statusChange:"NEW → STABLE", supportsDelta:"+NIV", keyChange:"New admission with respiratory support" },
+      { bed:"7", patientId:"8260761624", diagnosis:"Critical respiratory case post mechanical ventilation", acuity:"CRITICAL", supports:[], trend:"IMPROVED", change:"MV removed", mustDo:"Critical SPO2 & BP monitor vitals, prone 10PM", attending:"Dr Satyajit", keyLabs:"SpO2 and BP stability watch", escalation:"Escalate if desaturation after extubation", pendingTasks:[], statusChange:"CRITICAL → CRITICAL", supportsDelta:"-MV", keyChange:"Respiratory support reduced" },
+      { bed:"9", patientId:"202509080078", diagnosis:"Critical ventilated respiratory failure on weaning pathway", acuity:"CRITICAL", supports:["MV","NIV"], trend:"STABLE", change:"CPAP trial given", mustDo:"Plan extubation, monitor vitals", attending:"Dr Satyajit", keyLabs:"Vent wean tolerance", escalation:"Escalate if CPAP trial fails", pendingTasks:[], statusChange:"CRITICAL → CRITICAL", supportsDelta:"—", keyChange:"Ongoing weaning pathway" },
+      { bed:"10", patientId:"202604260004", diagnosis:"Stable renal dysfunction with planned HD", acuity:"STABLE", supports:["RRT"], trend:"STABLE", change:"No change", mustDo:"Guarded HD hold, plan HD tomorrow", attending:"Dr Satyajit", keyLabs:"Renal parameters pre-HD", escalation:"Escalate if fluid overload signs", pendingTasks:[], statusChange:"OTHER → OTHER", supportsDelta:"—", keyChange:"No major interval change" },
+      { bed:"11", patientId:"7325913759", diagnosis:"New admission with anuria on renal support", acuity:"STABLE", supports:["RRT"], trend:"NEW ADMISSION", change:"Supports added: RRT", mustDo:"Guarded anuria monitor vitals", attending:"Dr Satyajit", keyLabs:"Electrolyte and fluid charting", escalation:"Escalate for refractory acidosis", pendingTasks:[], statusChange:"NEW → OTHER", supportsDelta:"+RRT", keyChange:"New admission needing renal support" },
+      { bed:"13", patientId:"202508070086", diagnosis:"Critical respiratory failure with episodic hypotension", acuity:"CRITICAL", supports:["MV"], trend:"STABLE", change:"Hypotension 6PM", mustDo:"Critical — reassess, red flags: MAP<65, SpO2<92%", attending:"Dr Samir Samal", keyLabs:"MAP trend and oxygenation", escalation:"Escalate if MAP <65 persists", pendingTasks:[], statusChange:"CRITICAL → CRITICAL", supportsDelta:"—", keyChange:"Intermittent hypotension flagged" },
+      { bed:"14", patientId:"202601170031", diagnosis:"Critical low GCS, post tracheostomy with HD support", acuity:"CRITICAL", supports:["MV","RRT"], trend:"STABLE", change:"Low GCS", mustDo:"Critical tracheostomy done, HD today, 1 unit PRBC", attending:"Dr Satyajit", keyLabs:"Post-HD review, Hb after PRBC", escalation:"Escalate for neuro decline", pendingTasks:[], statusChange:"CRITICAL → CRITICAL", supportsDelta:"—", keyChange:"Procedures completed, remains critical" },
+      { bed:"15", patientId:"202604250073", diagnosis:"Hydrocephalus (new admission) with planned VP shunt", acuity:"STABLE", supports:["O2"], trend:"NEW ADMISSION", change:"Supports added: O2", mustDo:"Guarded hydrocephalus VP shunt 30/04/26, MRI brain due", attending:"Dr Satyajit", keyLabs:"Peri-procedure neuro monitoring", escalation:"Escalate for raised ICP signs", pendingTasks:["MRI brain due"], statusChange:"NEW → OTHER", supportsDelta:"+O2", keyChange:"New hydrocephalus case with planned procedure" },
+      { bed:"16", patientId:"202601160098", diagnosis:"Critical shock with multi-organ dysfunction", acuity:"CRITICAL", supports:["MV","VASO","RRT"], trend:"DETERIORATED", change:"VASO+RRT added, MAP<65", mustDo:"Critical HD line + HD, norad 1amp. Haemodynamic targets", attending:"Dr S.B. Mishra", keyLabs:"MAP, lactate, renal trend", escalation:"Escalate for refractory shock", pendingTasks:[], statusChange:"SICK → CRITICAL", supportsDelta:"+VASO +RRT", keyChange:"Shock progression with multi-organ support" },
+      { bed:"16B", patientId:"202507290048", diagnosis:"Stable post-hypoxia recovery pathway", acuity:"STABLE", supports:[], trend:"STABLE", change:"Hypoxia resolved", mustDo:"Guarded discharge today", attending:"Dr Satyajit", keyLabs:"Maintain room air sats", escalation:"Escalate if re-desaturation", pendingTasks:[], statusChange:"OTHER → OTHER", supportsDelta:"-O2", keyChange:"Respiratory stability regained" },
+      { bed:"17", patientId:"202604230013", diagnosis:"Stable cardiorespiratory support with anemia concern", acuity:"STABLE", supports:["NIV","RRT"], trend:"DETERIORATED", change:"Supports added: RRT", mustDo:"Guarded 1 unit PRBC not arranged, close monitoring", attending:"Dr Satyajit", keyLabs:"Hb trend and renal support review", escalation:"Escalate if symptomatic anemia", pendingTasks:["PRBC arrangement pending"], statusChange:"OTHER → OTHER", supportsDelta:"+RRT", keyChange:"Renal support escalation and transfusion delay" }
+    ];
+
+    const supportClass = { MV:"s-mv", NIV:"s-niv", RRT:"s-rrt", VASO:"s-vaso", O2:"s-o2" };
+    const trendClass = { DETERIORATED:"t-deteriorated", IMPROVED:"t-improved", "NEW ADMISSION":"t-new", STABLE:"t-stable" };
+    const acuityClass = { CRITICAL:"b-critical", STABLE:"b-stable", OTHER:"b-stable" };
+
+    const trendNorm = (v) => v === "NEW ADMIT" ? "NEW ADMISSION" : v;
+    const bedSortKey = (bed) => {
+      const m = String(bed).match(/^(\d+)([A-Za-z]*)$/);
+      if (!m) return [999, String(bed)];
+      return [parseInt(m[1], 10), m[2] || ""];
+    };
+    const bedSort = (a, b) => {
+      const [an, as] = bedSortKey(a.bed);
+      const [bn, bs] = bedSortKey(b.bed);
+      if (an !== bn) return an - bn;
+      return as.localeCompare(bs);
+    };
+
+    function supportsHtml(list) {
+      if (!list.length) return '<span class="mono">—</span>';
+      return list.map((s) => `<span class="support ${supportClass[s] || ''}">${s}</span>`).join("");
+    }
+
+    function renderPriorityTable() {
+      const table = document.getElementById("priorityTable");
+      const filtered = patients
+        .filter((p) => p.acuity === "CRITICAL" || trendNorm(p.trend) === "DETERIORATED" || p.pendingTasks.length > 0)
+        .sort((a, b) => {
+          const ar = trendNorm(a.trend) === "DETERIORATED" ? 0 : (a.acuity === "CRITICAL" ? 1 : 2);
+          const br = trendNorm(b.trend) === "DETERIORATED" ? 0 : (b.acuity === "CRITICAL" ? 1 : 2);
+          if (ar !== br) return ar - br;
+          return bedSort(a, b);
+        });
+
+      table.innerHTML = `
+        <thead>
+          <tr>
+            <th>Bed</th><th>Patient ID</th><th>Acuity</th><th>Supports</th><th>Trend</th>
+            <th>Change / Deterioration</th><th>Must Do</th><th>Attending</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${filtered.map((p) => {
+            const t = trendNorm(p.trend);
+            const rowClass = t === "DETERIORATED" ? "row-deteriorated" : (p.acuity === "CRITICAL" ? "row-critical" : "");
+            return `
+              <tr class="${rowClass}">
+                <td><strong>${p.bed}</strong></td>
+                <td class="mono">${p.patientId}</td>
+                <td><span class="badge ${acuityClass[p.acuity] || "b-stable"}">${p.acuity}</span></td>
+                <td>${supportsHtml(p.supports)}</td>
+                <td><span class="badge ${trendClass[t] || "t-stable"}">${t}</span></td>
+                <td>${p.change}</td>
+                <td>${p.mustDo}</td>
+                <td>${p.attending}</td>
+              </tr>`;
+          }).join("")}
+        </tbody>`;
+    }
+
+    function renderComparisonTable() {
+      const table = document.getElementById("compareTable");
+      const ordered = [...patients].sort(bedSort);
+      table.innerHTML = `
+        <thead>
+          <tr>
+            <th>Bed</th><th>Patient ID</th><th>Trend</th><th>Status Change</th><th>Supports Delta</th><th>Key Change</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${ordered.map((p) => {
+            const t = trendNorm(p.trend);
+            const deltaTokens = p.supportsDelta.split(" ").filter(Boolean).map((token) => {
+              if (token.startsWith("+")) return `<span class="delta add">${token}</span>`;
+              if (token.startsWith("-")) return `<span class="delta remove">${token}</span>`;
+              return `<span>${token}</span>`;
+            }).join(" ");
+            return `
+              <tr>
+                <td><strong>${p.bed}</strong></td>
+                <td class="mono">${p.patientId}</td>
+                <td><span class="badge ${trendClass[t] || "t-stable"}">${t}</span></td>
+                <td>${p.statusChange}</td>
+                <td>${deltaTokens || "—"}</td>
+                <td>${p.keyChange}</td>
+              </tr>`;
+          }).join("")}
+        </tbody>`;
+    }
+
+    function cardBorderClass(p) {
+      const t = trendNorm(p.trend);
+      if (t === "IMPROVED") return "c-improved";
+      if (p.acuity === "CRITICAL") return "c-critical";
+      return "c-stable";
+    }
+
+    function renderCards() {
+      const root = document.getElementById("cards");
+      const ordered = [...patients].sort(bedSort);
+      root.innerHTML = ordered.map((p) => {
+        const t = trendNorm(p.trend);
+        const pendingCount = p.pendingTasks.length;
+        const pendingClass = pendingCount > 0 ? "pending-badge" : "pending-badge pending-none";
+        const pendingText = pendingCount > 0 ? `${pendingCount} pending` : "No pending";
+        const pendingList = pendingCount > 0 ? p.pendingTasks.join(" | ") : "—";
+        return `
+          <article class="card ${cardBorderClass(p)}">
+            <div class="card-head">
+              <span class="bed-big">Bed ${p.bed}</span>
+              <span class="mono">${p.patientId}</span>
+              <span class="badge ${acuityClass[p.acuity] || "b-stable"}">${p.acuity}</span>
+              <span class="badge ${trendClass[t] || "t-stable"}">${t}</span>
+              ${supportsHtml(p.supports)}
+            </div>
+            <div class="card-body">
+              <div class="panel">
+                <h4>Diagnosis</h4>
+                <p>${p.diagnosis}</p>
+                <div class="box change"><strong>△ Change since last round:</strong><br>${p.change}</div>
+                <div class="box must"><strong>⚡ Must Do:</strong><br>${p.mustDo}</div>
+              </div>
+              <div class="panel">
+                <h4>Key Labs</h4>
+                <p>${p.keyLabs}</p>
+                <h4>Escalation</h4>
+                <p>${p.escalation}</p>
+                <h4>Pending tasks</h4>
+                <p>${pendingList}</p>
+              </div>
+            </div>
+            <div class="card-foot">
+              <span>${p.attending}</span>
+              <span class="${pendingClass}">${pendingText}</span>
+            </div>
+          </article>`;
+      }).join("");
+    }
+
+    renderPriorityTable();
+    renderComparisonTable();
+    renderCards();
+  </script>
+</body>
+</html>
