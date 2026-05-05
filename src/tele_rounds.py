@@ -76,7 +76,9 @@ def _patient_key(bed: str, patient_id: str) -> str:
 
 
 def _norm_header(value: Any) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", str(value or "").strip().lower()).strip()
+    text = str(value or "").strip().lower()
+    text = text.translate(str.maketrans({"₀": "0", "₁": "1", "₂": "2", "₃": "3", "₄": "4", "₅": "5", "₆": "6", "₇": "7", "₈": "8", "₉": "9"}))
+    return re.sub(r"[^a-z0-9]+", " ", text).strip()
 
 
 def _table_cells(table: Any) -> list[list[str]]:
@@ -110,6 +112,40 @@ def _contains_header(rows: list[list[str]], *needles: str) -> bool:
     else:
         header_text = _norm_header(" ".join(rows[header_idx]))
     return all(_norm_header(needle) in header_text for needle in needles)
+
+
+def _header_text(rows: list[list[str]]) -> str:
+    header_idx = _header_row_index(rows)
+    if header_idx is None:
+        return _norm_header(_table_text(rows))
+    return _norm_header(" ".join(rows[header_idx]))
+
+
+def _looks_like_section2_vitals(rows: list[list[str]]) -> bool:
+    header = _header_text(rows)
+    if "gcs trend" in header:
+        return False
+    return "gcs" in header and ("bp map" in header or "spo2" in header or re.search(r"\brr\b", header) is not None)
+
+
+def _looks_like_respiratory_table(rows: list[list[str]]) -> bool:
+    header = _header_text(rows)
+    return "mode" in header and ("fio2" in header or "peep" in header or "abg summary" in header)
+
+
+def _looks_like_hemodynamic_table(rows: list[list[str]]) -> bool:
+    header = _header_text(rows)
+    return "map stability" in header or "inotropes" in header or "lactate" in header
+
+
+def _looks_like_renal_table(rows: list[list[str]]) -> bool:
+    header = _header_text(rows)
+    return "creatinine" in header or "dialysis status" in header or "urine trend" in header
+
+
+def _looks_like_investigation_table(rows: list[list[str]]) -> bool:
+    header = _header_text(rows)
+    return "pending investigations" in header or "planned procedures" in header or "key investigations" in header
 
 
 def _is_section_title_row(cells: list[str]) -> bool:
@@ -183,6 +219,15 @@ def _value_for_header(rows: list[list[str]], aliases: list[str], default: str = 
     return default
 
 
+def _clean_bed_value(value: str) -> str:
+    text = _normalize(value)
+    bed_match = re.search(r"\bBED\s*([A-Za-z]?\d+[A-Za-z]?)\b", text, flags=re.IGNORECASE)
+    if bed_match:
+        return bed_match.group(1).upper()
+    digits = re.findall(r"\d+[A-Za-z]?", text)
+    return digits[-1].upper() if digits else ""
+
+
 def _section1_from_table(rows: list[list[str]]) -> dict[str, str]:
     data = _first_data_row(rows)
     text = _table_text(rows)
@@ -191,10 +236,8 @@ def _section1_from_table(rows: list[list[str]]) -> dict[str, str]:
         patient_id = _extract_patient_id(text)
 
     bed = _value_for_header(rows, ["Bed No", "ICU Bed No", "Bed"], default="")
-    bed_digits = re.search(r"\d+", bed)
-    if bed_digits:
-        bed = bed_digits.group(0)
-    else:
+    bed = _clean_bed_value(bed)
+    if not bed:
         bed = _rmo_extract_bed(text)
 
     patient_name = _value_for_header(rows, ["Patient Name", "Name"], default="")
@@ -262,6 +305,50 @@ def _section12_from_table(rows: list[list[str]]) -> dict[str, str]:
     }
 
 
+def _clean_marker_value(value: str) -> str:
+    text = _normalize(value)
+    if text.upper() in {"Y", "N", "YES", "NO", "NA", "N/A", "NIL", "-"}:
+        return ""
+    text = re.sub(r"^(?:Y|YES|N|NO)[\s:;.,|-]+", "", text, flags=re.IGNORECASE).strip()
+    return "" if text.upper() in {"Y", "N", "YES", "NO", "NA", "N/A", "NIL", "-"} else text
+
+
+def _meaningful_pending_text(value: str) -> str:
+    text = _clean_marker_value(value)
+    if not text:
+        return ""
+    if not re.search(r"[A-Za-z]", text):
+        return ""
+    if re.fullmatch(r"(?:Y|N|YES|NO)(?:\s+(?:Y|N|YES|NO))*", text, flags=re.IGNORECASE):
+        return ""
+    return text
+
+
+def _fallback_pending_from_row(value: str) -> str:
+    text = _meaningful_pending_text(value)
+    if not text:
+        return ""
+    pending_tokens = ["PENDING", "DUE", "REPORT", "CALL", "CONSULT", "MRI", "CT", "CECT", "USG", "UGIE", "EEG"]
+    return text if any(token in text.upper() for token in pending_tokens) else ""
+
+
+def _section9_from_table(rows: list[list[str]]) -> dict[str, str]:
+    pending = _meaningful_pending_text(_value_for_header(rows, ["Pending Investigations", "Pending"], default=""))
+    done = _clean_marker_value(_value_for_header(rows, ["Key Investigations Done", "Investigations Done"], default=""))
+    procedures_done = _clean_marker_value(_value_for_header(rows, ["Procedures Done"], default=""))
+    planned = _clean_marker_value(_value_for_header(rows, ["Planned Procedures", "Plan"], default=""))
+    row_text = _strip_datetime_prefix(" ".join(_first_data_row(rows)))
+
+    actions_done = _normalize(" | ".join(item for item in [done, procedures_done] if item))
+    return {
+        "section9_row": row_text,
+        "pending": _normalize(pending),
+        "actions_done": actions_done,
+        "plan_next_12h": _normalize(planned),
+        "key_labs_imaging": _normalize(done),
+    }
+
+
 def parse_docx_patient_blocks(data: bytes) -> tuple[list[dict[str, Any]], list[str]]:
     if Document is None:
         raise ExtractionError("DOCX support missing. Install python-docx.")
@@ -277,7 +364,7 @@ def parse_docx_patient_blocks(data: bytes) -> tuple[list[dict[str, Any]], list[s
             continue
         text = _table_text(rows)
         section_no = _detect_section_no(rows)
-        looks_section1 = section_no == 1 or "UHID" in text.upper()
+        looks_section1 = section_no == 1 or _contains_header(rows, "UHID")
 
         if looks_section1:
             if current is not None and (current.get("bed") or current.get("patient_id")):
@@ -288,15 +375,23 @@ def parse_docx_patient_blocks(data: bytes) -> tuple[list[dict[str, Any]], list[s
         if current is None:
             continue
 
-        if section_no == 2 or _contains_header(rows, "GCS"):
+        if section_no == 2 or _looks_like_section2_vitals(rows):
             current.update(_section2_from_table(rows))
+        elif section_no == 3 or _looks_like_respiratory_table(rows):
+            current["section3_row"] = _strip_datetime_prefix(" ".join(_first_data_row(rows)))
+        elif section_no == 4 or _looks_like_hemodynamic_table(rows):
+            current["section4_row"] = _strip_datetime_prefix(" ".join(_first_data_row(rows)))
+        elif _looks_like_renal_table(rows):
+            current["section6_row"] = _strip_datetime_prefix(" ".join(_first_data_row(rows)))
+        elif section_no == 9 or _looks_like_investigation_table(rows):
+            current.update(_section9_from_table(rows))
         elif section_no == 10 or "RED FLAG" in text.upper():
             current.update(_section10_from_table(rows))
         elif section_no == 11 or "CURRENT STATUS" in text.upper() or "MAJOR CONCERN" in text.upper():
             current.update(_section11_from_table(rows))
         elif section_no == 12 or "ADVICE GIVEN" in text.upper():
             current.update(_section12_from_table(rows))
-        elif section_no in {3, 4, 6, 9}:
+        elif section_no in {6}:
             current[f"section{section_no}_row"] = _strip_datetime_prefix(" ".join(_first_data_row(rows)))
 
     if current is not None and (current.get("bed") or current.get("patient_id")):
@@ -317,7 +412,7 @@ def parse_docx_patient_blocks(data: bytes) -> tuple[list[dict[str, Any]], list[s
                 patient.get("new_issues", ""),
             )
         if not patient.get("pending"):
-            patient["pending"] = patient.get("section9_row", "")
+            patient["pending"] = _fallback_pending_from_row(patient.get("section9_row", ""))
 
     if not patients:
         warnings.append("No patient blocks found using Section 1 to Section 13 DOCX parsing.")

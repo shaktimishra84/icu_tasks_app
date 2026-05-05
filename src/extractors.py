@@ -146,8 +146,12 @@ def _pad_row(cells: list[str], size: int) -> list[str]:
 
 
 def _extract_bed_digits(value: str) -> str:
-    match = re.search(r"(\d+)", value)
-    return match.group(1) if match else ""
+    text = str(value or "").strip()
+    bed_match = re.search(r"\bBED\s*([A-Za-z]?\d+[A-Za-z]?)\b", text, flags=re.IGNORECASE)
+    if bed_match:
+        return bed_match.group(1).upper()
+    matches = re.findall(r"\d+[A-Za-z]?", text)
+    return matches[-1].upper() if matches else ""
 
 
 def _is_template_value(value: str) -> bool:
@@ -234,12 +238,30 @@ def _patient_key(value: str) -> str:
 
 
 def _is_plausible_patient_id(value: str) -> bool:
+    raw = str(value or "").strip()
+    if any(char in raw for char in ["/", ",", ".", "(", ")"]):
+        return False
+    if re.search(r"\b\d{1,2}(?:[:.]\d{2})?\s*(?:AM|PM)\b", raw, flags=re.IGNORECASE):
+        return False
+    if re.search(r"\b\d{2,3}\s*/\s*\d{2,3}(?:\s*\(\s*\d{2,3}\s*\))?", raw):
+        return False
+    if re.search(r"\bE\d+\s*V(?:T|NT|\d+)\s*M\d+\b", raw, flags=re.IGNORECASE):
+        return False
+    compact_raw = re.sub(r"[^A-Z0-9]+", "", raw.upper())
+    if re.fullmatch(r"E\d+V[A-Z0-9]*M\d+", compact_raw):
+        return False
+    if re.search(r"\bDR\.?\b", raw, flags=re.IGNORECASE):
+        return False
     cleaned = re.sub(r"[^a-z0-9]+", "", str(value or "").strip().lower())
     if not cleaned:
         return False
     if cleaned.isdigit():
-        return len(cleaned) >= 6
+        return len(cleaned) >= 8
     if any(char.isalpha() for char in cleaned):
+        if not any(char.isdigit() for char in cleaned):
+            return False
+        if re.search(r"\s", raw):
+            return False
         return len(cleaned) >= 4
     return len(cleaned) >= 6
 
@@ -371,6 +393,23 @@ def _fallback_header_maps(rows_as_cells: list[list[str]]) -> list[dict[str, int]
     return maps
 
 
+def _is_structured_rmo_section_table(rows_as_cells: list[list[str]]) -> bool:
+    first_rows = " ".join(" ".join(row) for row in rows_as_cells[:2])
+    header = _normalize_header(first_rows)
+    section_markers = [
+        ("uhid" in header and "patient name" in header and "icu bed no" in header),
+        ("gcs" in header and "bp map" in header),
+        ("mode" in header and ("fio2" in header or "peep" in header)),
+        ("map stability" in header or "inotropes" in header),
+        ("gcs trend" in header),
+        ("urine trend" in header and "creatinine" in header),
+        ("red flag present" in header),
+        ("current status" in header and "major concern" in header),
+        ("advice given" in header),
+    ]
+    return any(section_markers)
+
+
 def _parse_bed_table(rows_as_cells: list[list[str]]) -> tuple[list[dict[str, str]], list[str]]:
     warnings: list[str] = []
     best_header_index: int | None = None
@@ -395,9 +434,13 @@ def _parse_bed_table(rows_as_cells: list[list[str]]) -> tuple[list[dict[str, str
         if parsed_rows:
             return parsed_rows, warnings
 
+    if _is_structured_rmo_section_table(rows_as_cells):
+        return [], warnings
+
     fallback_best_rows: list[dict[str, str]] = []
     fallback_best_warnings: list[str] = []
     fallback_best_score = -1
+    fallback_best_plausible_pid = 0
     for fallback_map in _fallback_header_maps(rows_as_cells):
         parsed_rows, fallback_warnings = _parse_rows_with_header_map(
             rows_as_cells=rows_as_cells,
@@ -409,14 +452,17 @@ def _parse_bed_table(rows_as_cells: list[list[str]]) -> tuple[list[dict[str, str
         plausible_pid = sum(
             1 for row in parsed_rows if _is_plausible_patient_id(str(row.get("patient_id", "")))
         )
+        if plausible_pid <= 0:
+            continue
         any_pid = sum(1 for row in parsed_rows if str(row.get("patient_id", "")).strip())
         score = (plausible_pid * 1000) + (any_pid * 20) + len(parsed_rows)
         if score > fallback_best_score:
             fallback_best_score = score
+            fallback_best_plausible_pid = plausible_pid
             fallback_best_rows = parsed_rows
             fallback_best_warnings = fallback_warnings
 
-    if fallback_best_rows:
+    if fallback_best_rows and fallback_best_plausible_pid > 0:
         warnings = list(fallback_best_warnings)
         warnings.append("Header row not confidently detected; used positional fallback parsing.")
         return fallback_best_rows, warnings

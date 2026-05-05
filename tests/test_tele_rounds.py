@@ -70,7 +70,7 @@ def test_parse_docx_patient_blocks_maps_latest_first_data_rows() -> None:
         [
             ["SECTION 1: PATIENT IDENTIFICATION", "", "", "", ""],
             ["UHID", "Patient Name", "Bed No", "Category", "Primary Diagnosis"],
-            ["P001", "A Patient", "17", "ICU", "Septic shock"],
+            ["P001", "A Patient", "ICU1 BED 17", "ICU", "Septic shock"],
         ],
     )
     _add_table(
@@ -80,6 +80,13 @@ def test_parse_docx_patient_blocks_maps_latest_first_data_rows() -> None:
             ["Sl No", "GCS", "BP (MAP)", "SpO2", "RR"],
             ["05.05.26 7.30 AM", "E4V5M6", "156/70(85)", "94", "24"],
             ["04.05.26 9.30 PM", "E3V4M5", "100/60(70)", "90", "30"],
+        ],
+    )
+    _add_table(
+        document,
+        [
+            ["Sl No", "GCS Trend", "Pupils", "Sedation", "Seizure / Agitation"],
+            ["05.05.26 7.30 AM", "E3V4M5", "ERL", "N", "N"],
         ],
     )
     _add_table(

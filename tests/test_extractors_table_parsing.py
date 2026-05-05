@@ -74,6 +74,15 @@ class ExtractorBedTableParsingTests(unittest.TestCase):
         self.assertEqual(parsed[1]["bed"], "17")
         self.assertEqual(parsed[1]["patient_id"], "9937160805")
 
+    def test_bed_cell_uses_number_after_bed_label(self) -> None:
+        rows = [
+            HEADER,
+            ["ICU1 BED 10", "202605010054", "Aspiration pneumonia", "SICK", "O2", "", "", "", "", ""],
+        ]
+        parsed, warnings = _parse_bed_table(rows)
+        self.assertFalse(warnings)
+        self.assertEqual(parsed[0]["bed"], "10")
+
     def test_continuation_rows_append_fields(self) -> None:
         rows = [
             HEADER,
@@ -113,6 +122,24 @@ class ExtractorBedTableParsingTests(unittest.TestCase):
         self.assertEqual(parsed[1]["bed"], "26")
         self.assertEqual(parsed[1]["patient_id"], "9124061892")
         self.assertTrue(any("fallback" in item.lower() for item in warnings))
+
+    def test_fallback_rejects_vitals_rows_as_patient_rows(self) -> None:
+        rows = [
+            ["05.05.26 07.30AM", "E4V2M6", "86", "156/70(85)", "96", "14", "98.6", "25/50/25/10/25/10", "102"],
+            ["04.05.26 09.30PM", "E4V2M6", "91", "136/78", "97", "18", "98.8", "50/50/40/35/40/20", "116"],
+        ]
+        parsed, warnings = _parse_bed_table(rows)
+        self.assertEqual(parsed, [])
+        self.assertFalse(any("fallback" in item.lower() for item in warnings))
+
+    def test_fallback_rejects_doctor_roster_rows_as_patient_rows(self) -> None:
+        rows = [
+            ["7.30AM", "DR PRITI DR TUNU", "", "", "DR SANTANU DR SONALI"],
+            ["9.30PM", "DR SANTANU DR SIDHARTH", "", "", "DR PRITI DR TUNU"],
+        ]
+        parsed, warnings = _parse_bed_table(rows)
+        self.assertEqual(parsed, [])
+        self.assertFalse(any("fallback" in item.lower() for item in warnings))
 
 
 if __name__ == "__main__":
