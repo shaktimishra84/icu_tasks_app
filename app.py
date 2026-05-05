@@ -36,7 +36,12 @@ from src.rounds_tracker import (
 )
 from src.rounds_pdf import generate_rounds_pdf
 from src.rmo_pdf import parse_combined_rmo_pdf, parse_combined_rmo_text
-from src.tele_rounds import generate_whatsapp_round_pdf, parse_docx_patient_blocks, process_icu_report
+from src.tele_rounds import generate_whatsapp_round_pdf, process_icu_report
+
+try:
+    from src.tele_rounds import parse_docx_patient_blocks
+except ImportError:  # pragma: no cover - keeps deployed app alive during partial/stale cloud reloads.
+    parse_docx_patient_blocks = None
 
 
 APP_DIR = Path(__file__).parent
@@ -1332,6 +1337,8 @@ def _parse_rounds_document(filename: str, data: bytes) -> dict[str, Any]:
         raise ExtractionError("Rounds upload supports PDF and DOCX only.")
 
     try:
+        if parse_docx_patient_blocks is None:
+            raise ExtractionError("Patient-block DOCX parser is not available in this runtime.")
         block_rows, block_warnings = parse_docx_patient_blocks(data)
     except Exception as error:  # noqa: BLE001 - keep legacy DOCX extraction available for malformed files.
         block_rows = []
