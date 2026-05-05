@@ -36,7 +36,7 @@ from src.rounds_tracker import (
 )
 from src.rounds_pdf import generate_rounds_pdf
 from src.rmo_pdf import parse_combined_rmo_pdf, parse_combined_rmo_text
-from src.tele_rounds import generate_whatsapp_round_pdf, process_icu_report
+from src.tele_rounds import generate_whatsapp_round_pdf, parse_docx_patient_blocks, process_icu_report
 
 
 APP_DIR = Path(__file__).parent
@@ -1331,6 +1331,19 @@ def _parse_rounds_document(filename: str, data: bytes) -> dict[str, Any]:
     if ext != ".docx":
         raise ExtractionError("Rounds upload supports PDF and DOCX only.")
 
+    try:
+        block_rows, block_warnings = parse_docx_patient_blocks(data)
+    except Exception as error:  # noqa: BLE001 - keep legacy DOCX extraction available for malformed files.
+        block_rows = []
+        block_warnings = [f"Patient-block DOCX parser skipped: {error}"]
+    if block_rows:
+        return {
+            "table_rows": block_rows,
+            "blocks_detected": len(block_rows),
+            "warnings": block_warnings,
+            "debug_blocks": block_rows[:2],
+        }
+
     extracted = extract_text(filename, data)
     if not isinstance(extracted, dict):
         raise ExtractionError("Unexpected DOCX extraction result.")
@@ -1348,7 +1361,7 @@ def _parse_rounds_document(filename: str, data: bytes) -> dict[str, Any]:
 
     fallback_rows = extracted.get("table_rows", [])
     table_rows = fallback_rows if isinstance(fallback_rows, list) else []
-    warnings = list(extracted.get("parse_warnings", []) or [])
+    warnings = block_warnings + list(extracted.get("parse_warnings", []) or [])
     if not table_rows:
         warnings.append("No patient table rows parsed from DOCX.")
     else:
