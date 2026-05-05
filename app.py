@@ -36,6 +36,7 @@ from src.rounds_tracker import (
 )
 from src.rounds_pdf import generate_rounds_pdf
 from src.rmo_pdf import parse_combined_rmo_pdf
+from src.tele_rounds import generate_whatsapp_round_pdf, process_icu_report
 
 
 APP_DIR = Path(__file__).parent
@@ -56,6 +57,7 @@ ICU_UNITS = [
     "ICU 7",
     "Berhampur ICU",
 ]
+PRIMARY_ICU_UNIT = os.getenv("PRIMARY_ICU_UNIT", "MICU").strip() or "MICU"
 MISSING_PATIENT_OUTCOME_OPTIONS = ["Select...", "Death", "DAMA", "Discharge", "Shifted"]
 
 
@@ -2565,7 +2567,7 @@ if "advisor" not in st.session_state:
 if "history_store_cache" not in st.session_state:
     st.session_state.history_store_cache = {}
 if "active_tracker_unit" not in st.session_state:
-    st.session_state.active_tracker_unit = ICU_UNITS[0]
+    st.session_state.active_tracker_unit = PRIMARY_ICU_UNIT
 
 knowledge_base: KnowledgeBase = st.session_state.knowledge_base
 advisor: ClinicalTaskAdvisor = st.session_state.advisor
@@ -2573,17 +2575,11 @@ advisor: ClinicalTaskAdvisor = st.session_state.advisor
 _ensure_startup_index(knowledge_base)
 
 st.sidebar.header("Settings")
-default_unit = str(st.session_state.get("active_tracker_unit", ICU_UNITS[0]))
-unit_index = ICU_UNITS.index(default_unit) if default_unit in ICU_UNITS else 0
-selected_icu_unit = st.sidebar.selectbox(
-    "Navigate ICU",
-    options=ICU_UNITS,
-    index=unit_index,
-    key="selected_icu_unit",
-)
+selected_icu_unit = PRIMARY_ICU_UNIT
 if selected_icu_unit != st.session_state.get("active_tracker_unit"):
     _clear_tracker_state()
     st.session_state.active_tracker_unit = selected_icu_unit
+st.sidebar.caption(f"ICU: {selected_icu_unit}")
 
 _render_app_header(selected_icu_unit)
 
@@ -2592,46 +2588,45 @@ if selected_icu_unit not in history_store_cache:
     history_store_cache[selected_icu_unit] = ICUHistoryStore(_history_db_path_for_unit(selected_icu_unit))
 history_store: ICUHistoryStore = history_store_cache[selected_icu_unit]
 
-st.sidebar.caption(f"Tracking unit: {selected_icu_unit}")
-st.sidebar.caption(f"Local DB: `{_history_db_path_for_unit(selected_icu_unit).name}`")
-with st.sidebar.expander("Unit history maintenance", expanded=False):
+model_name = advisor.model
+with st.sidebar.expander("Advanced settings", expanded=False):
+    st.caption(f"Local DB: `{_history_db_path_for_unit(selected_icu_unit).name}`")
+    model_name = st.text_input("LLM model", value=os.getenv("OPENAI_MODEL", advisor.model))
+
+    if advisor.llm_available:
+        st.success("OPENAI_API_KEY detected")
+    else:
+        st.warning("OPENAI_API_KEY missing - fallback mode")
+
+    if st.button("Rebuild startup index", use_container_width=True):
+        with st.spinner("Indexing resources/**/*.pdf ..."):
+            knowledge_base.build_from_resources()
+            st.session_state.index_ready = True
+            st.session_state.startup_index_source = "manual_rebuild"
+        st.success("Index rebuilt from resources/**/*.pdf")
+
     confirm_reset = st.checkbox(
-        f"Confirm clear {selected_icu_unit} history",
+        "Confirm clear local round history",
         value=False,
         key=f"confirm_clear_{_unit_slug(selected_icu_unit)}",
     )
-    if st.button("Clear selected ICU history", use_container_width=True, key=f"clear_unit_{_unit_slug(selected_icu_unit)}"):
+    if st.button("Clear local round history", use_container_width=True, key=f"clear_unit_{_unit_slug(selected_icu_unit)}"):
         if not confirm_reset:
-            st.warning("Tick confirmation first to clear this ICU history.")
+            st.warning("Tick confirmation first to clear history.")
         else:
             try:
                 history_store.clear_all()
             except Exception as error:
-                st.error(f"Could not clear ICU history: {error}")
+                st.error(f"Could not clear history: {error}")
             else:
                 _clear_tracker_state()
+                _clear_rmo_pdf_state()
                 st.session_state["tracker_context"] = f"Cleared saved history for {selected_icu_unit}."
-                st.success(f"Cleared saved history for {selected_icu_unit}.")
-
-model_name = st.sidebar.text_input("LLM model", value=os.getenv("OPENAI_MODEL", advisor.model))
-top_k = st.sidebar.slider("Top chunks to retrieve", min_value=1, max_value=12, value=6)
-use_only_neuro = st.sidebar.toggle("Use only Neuro resources", value=True)
+                st.success("Local round history cleared.")
 
 if model_name != advisor.model:
     st.session_state.advisor = ClinicalTaskAdvisor(model=model_name)
     advisor = st.session_state.advisor
-
-if advisor.llm_available:
-    st.sidebar.success("OPENAI_API_KEY detected")
-else:
-    st.sidebar.warning("OPENAI_API_KEY missing - fallback mode")
-
-if st.sidebar.button("Rebuild startup index", use_container_width=True):
-    with st.spinner("Indexing resources/**/*.pdf ..."):
-        knowledge_base.build_from_resources()
-        st.session_state.index_ready = True
-        st.session_state.startup_index_source = "manual_rebuild"
-    st.sidebar.success("Index rebuilt from resources/**/*.pdf")
 
 resources_tab, case_tab = st.tabs(["Indexed Resources", "Case Review"])
 
@@ -2898,3 +2893,142 @@ with case_tab:
         st.warning("Beds were parsed but output table is empty. Click `Regenerate output for ALL beds`.")
     else:
         st.info("Upload a rounds PDF to start, or click `Load last saved round`.")
+
+    st.markdown("---")
+    st.subheader("Tele-Round Editing Assistant (DOCX/PDF)")
+    st.caption("Structured handover editor: Section 2 clinical status + Section 11 concern/recommendation + new consultant orders.")
+
+    tele_upload = st.file_uploader(
+        "Upload ICU RMO report for tele-round editing",
+        type=["docx", "pdf"],
+        accept_multiple_files=False,
+        key="tele_round_doc_upload",
+    )
+
+    if tele_upload is not None:
+        tele_signature = _uploaded_file_fingerprint(tele_upload)
+        if st.session_state.get("tele_round_signature") != tele_signature:
+            st.session_state["tele_round_signature"] = tele_signature
+            st.session_state.pop("tele_round_report", None)
+            st.session_state.pop("tele_round_pdf_bytes", None)
+            st.session_state.pop("tele_round_pdf_name", None)
+            try:
+                tele_report = process_icu_report(tele_upload.name, tele_upload.getvalue())
+            except Exception as error:
+                st.error(f"Tele-round parse failed for `{tele_upload.name}`: {error}")
+            else:
+                st.session_state["tele_round_report"] = tele_report
+
+    tele_report = st.session_state.get("tele_round_report")
+    if isinstance(tele_report, dict) and tele_report.get("patients"):
+        report_date = str(tele_report.get("report_date", "")).strip() or date.today().isoformat()
+        default_shift = str(tele_report.get("shift_label", "Morning (7:30 AM)")).strip() or "Morning (7:30 AM)"
+        shift_options = ["Morning (7:30 AM)", "Evening (9:30 PM)"]
+        shift_index = shift_options.index(default_shift) if default_shift in shift_options else 0
+        selected_shift = st.radio(
+            "Round slot for WhatsApp PDF",
+            options=shift_options,
+            index=shift_index,
+            horizontal=True,
+            key="tele_round_shift_label",
+        )
+
+        st.write(
+            f"Report: `{tele_report.get('filename', '')}` | Date: **{report_date}** | "
+            f"Beds parsed: **{len(tele_report.get('patients', []))}**"
+        )
+
+        tele_warnings = tele_report.get("warnings", [])
+        if isinstance(tele_warnings, list) and tele_warnings:
+            with st.expander("Tele-round parser warnings", expanded=False):
+                for warning in tele_warnings:
+                    st.markdown(f"- {warning}")
+
+        red_flags = tele_report.get("red_flags", [])
+        if isinstance(red_flags, list) and red_flags:
+            st.error(f"Red Flag Alert: {len(red_flags)} patient(s) marked critical in Section 10.")
+            for item in red_flags[:12]:
+                st.markdown(
+                    f"- Bed **{item.get('bed', '-') or '-'}** | `{item.get('patient_id', '-') or '-'}`: "
+                    f"{item.get('issue', 'Red flag marked Y')}"
+                )
+        else:
+            st.success("No Section 10 red-flag 'Y' entries detected.")
+
+        st.markdown("### Bed-wise Tele-Round Input")
+        patients = list(tele_report.get("patients", []))
+        for patient in patients:
+            bed = str(patient.get("bed", "")).strip() or "-"
+            patient_id = str(patient.get("patient_id", "")).strip() or "Not documented"
+            patient_key = str(patient.get("patient_key", "")).strip()
+            if not patient_key:
+                patient_key = _state_key_fragment(f"{bed}_{patient_id}")
+                patient["patient_key"] = patient_key
+
+            with st.expander(f"Bed {bed} | {patient_id}", expanded=False):
+                st.caption(f"Diagnosis: {patient.get('diagnosis', 'Not documented')}")
+                st.caption(f"Section 2 clinical status: {patient.get('clinical_status', 'Not documented')}")
+                st.caption(f"Supports: {patient.get('supports', 'None documented')} | Acuity: {patient.get('status', 'Not documented')}")
+
+                note_default = (
+                    f"Major concern: {patient.get('major_concern', 'Not documented')}\n"
+                    f"RMO recommendation: {patient.get('rmo_recommendation', 'Not documented')}"
+                )
+                st.text_area(
+                    "Tele-round editable note",
+                    value=note_default,
+                    height=100,
+                    key=f"tele_round_note_{patient_key}",
+                )
+                st.text_area(
+                    "Section 12: New consultant orders",
+                    value="",
+                    height=80,
+                    key=f"tele_round_orders_{patient_key}",
+                )
+
+        if st.button(
+            "Export to WhatsApp PDF",
+            type="primary",
+            use_container_width=True,
+            key="export_tele_round_pdf",
+        ):
+            orders_by_key: dict[str, str] = {}
+            for patient in patients:
+                patient_key = str(patient.get("patient_key", "")).strip()
+                if not patient_key:
+                    continue
+                orders_by_key[patient_key] = str(
+                    st.session_state.get(f"tele_round_orders_{patient_key}", "")
+                ).strip()
+            export_report = dict(tele_report)
+            export_report["shift_label"] = selected_shift
+            export_report["report_date"] = report_date
+            try:
+                logo_candidates = [
+                    APP_DIR / "assets" / "hospital_logo.png",
+                    APP_DIR / "assets" / "logo.png",
+                    APP_DIR / "logo.png",
+                ]
+                logo_path = next((candidate for candidate in logo_candidates if candidate.exists()), None)
+                pdf_bytes, pdf_path = generate_whatsapp_round_pdf(
+                    export_report,
+                    orders_by_key=orders_by_key,
+                    logo_path=logo_path,
+                )
+            except Exception as error:
+                st.error(f"WhatsApp PDF export failed: {error}")
+            else:
+                st.session_state["tele_round_pdf_bytes"] = pdf_bytes
+                st.session_state["tele_round_pdf_name"] = pdf_path.name
+                st.success(f"WhatsApp PDF generated: `{pdf_path}`")
+
+        if st.session_state.get("tele_round_pdf_bytes"):
+            st.download_button(
+                "Download WhatsApp PDF",
+                data=st.session_state["tele_round_pdf_bytes"],
+                file_name=str(st.session_state.get("tele_round_pdf_name", "ICU_WhatsApp_Rounds.pdf")),
+                mime="application/pdf",
+                use_container_width=True,
+                key="download_tele_round_pdf",
+            )

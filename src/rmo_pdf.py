@@ -225,6 +225,61 @@ def _extract_red_flag_issue(section10_row: str) -> str:
     return _normalize_space(text)[:180]
 
 
+def _has_red_flag(section10_row: str) -> bool:
+    if not section10_row:
+        return False
+    text = _strip_datetime_prefix(section10_row).upper()
+    if not text:
+        return False
+    y_tokens = re.findall(r"\bY\b", text)
+    if not y_tokens:
+        return False
+    if re.search(r"\bNO\s+RED\s+FLAG\b", text):
+        return False
+    return True
+
+
+def _extract_consultant_focus(section11_row: str, section12_row: str) -> tuple[str, str]:
+    summary = _strip_datetime_prefix(section11_row)
+    orders = _strip_datetime_prefix(section12_row)
+    summary = re.sub(r"^\b(?:CRITICAL|GUARDED|STABLE|SICK|SERIOUS)\b[:\s-]*", "", summary, flags=re.IGNORECASE).strip()
+
+    if not summary:
+        return ("", orders[:220])
+
+    major_concern = ""
+    recommendation = ""
+
+    major_match = re.search(r"MAJOR\s+CONCERN", summary, flags=re.IGNORECASE)
+    if major_match:
+        tail = summary[major_match.end() :].strip(" :-")
+        split_match = re.search(
+            r"\b(?:RMO\s+RECOMMENDATION|RECOMMENDATION|REQUIREMENT|PLAN|ADVICE)\b",
+            tail,
+            flags=re.IGNORECASE,
+        )
+        if split_match:
+            major_concern = tail[: split_match.start()].strip(" :-|")
+            recommendation = tail[split_match.end() :].strip(" :-|")
+        else:
+            major_concern = tail
+    else:
+        split_match = re.search(
+            r"\b(?:RMO\s+RECOMMENDATION|RECOMMENDATION|REQUIREMENT|PLAN|ADVICE)\b",
+            summary,
+            flags=re.IGNORECASE,
+        )
+        if split_match:
+            major_concern = summary[: split_match.start()].strip(" :-|")
+            recommendation = summary[split_match.end() :].strip(" :-|")
+        else:
+            major_concern = summary
+
+    if not recommendation:
+        recommendation = orders
+    return (_normalize_space(major_concern)[:220], _normalize_space(recommendation)[:220])
+
+
 def _extract_investigation_actions(section9_row: str, section11_row: str, section12_row: str) -> tuple[str, str, str]:
     section9_columns = _split_columns(section9_row)
     pending = ""
@@ -306,6 +361,8 @@ def _parse_block(block: str) -> dict[str, str]:
     status = _extract_status(sec11_row, supports, sec10_row)
     diagnosis = _extract_diagnosis(section1, sec11_row)
     new_issues = _extract_red_flag_issue(sec10_row)
+    red_flag_present = _has_red_flag(sec10_row)
+    major_concern, rmo_recommendation = _extract_consultant_focus(sec11_row, sec12_row)
     actions_done, plan_next_12h, pending = _extract_investigation_actions(sec9_row, sec11_row, sec12_row)
     key_labs = _extract_key_labs(sec2_row, sec3_row, sec4_row, sec6_row, sec7_row)
 
@@ -320,6 +377,12 @@ def _parse_block(block: str) -> dict[str, str]:
         "plan_next_12h": plan_next_12h,
         "pending": pending,
         "key_labs_imaging": key_labs,
+        "section2_status": _strip_datetime_prefix(sec2_row)[:220],
+        "section11_summary": _strip_datetime_prefix(sec11_row)[:220],
+        "section12_orders": _strip_datetime_prefix(sec12_row)[:220],
+        "major_concern": major_concern,
+        "rmo_recommendation": rmo_recommendation,
+        "red_flag_present": "Y" if red_flag_present else "N",
     }
 
 
@@ -367,4 +430,3 @@ def parse_combined_rmo_pdf(filename: str, data: bytes) -> dict[str, Any]:
     if result.get("blocks_detected", 0) <= 0:
         raise ExtractionError("Uploaded PDF is not in expected combined RMO format.")
     return result
-

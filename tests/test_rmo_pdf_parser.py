@@ -68,6 +68,10 @@ class RmoPdfParserTests(unittest.TestCase):
         self.assertIn("Dialysis", first.get("supports", ""))
         self.assertEqual(first.get("status"), "CRITICAL")
         self.assertIn("LOW GCS", first.get("new_issues", "").upper())
+        self.assertEqual(first.get("red_flag_present"), "Y")
+        self.assertIn("SHOCK", first.get("major_concern", "").upper())
+        self.assertIn("VENT SUPPORT", first.get("rmo_recommendation", "").upper())
+        self.assertIn("E1VTM1", first.get("section2_status", ""))
 
     def test_parse_returns_warning_when_no_blocks(self) -> None:
         payload = parse_combined_rmo_text("Plain PDF text without ICU structure")
@@ -79,4 +83,3 @@ class RmoPdfParserTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-
