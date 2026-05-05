@@ -35,7 +35,7 @@ from src.rounds_tracker import (
     support_labels_from_state,
 )
 from src.rounds_pdf import generate_rounds_pdf
-from src.rmo_pdf import parse_combined_rmo_pdf
+from src.rmo_pdf import parse_combined_rmo_pdf, parse_combined_rmo_text
 from src.tele_rounds import generate_whatsapp_round_pdf, process_icu_report
 
 
@@ -1321,6 +1321,45 @@ def _safe_build_all_beds(rows: list[dict[str, str]]) -> list[dict[str, Any]]:
         with st.expander("Batch error details", expanded=False):
             st.exception(error)
         return []
+
+
+def _parse_rounds_document(filename: str, data: bytes) -> dict[str, Any]:
+    ext = Path(filename).suffix.lower()
+    if ext == ".pdf":
+        return parse_combined_rmo_pdf(filename, data)
+
+    if ext != ".docx":
+        raise ExtractionError("Rounds upload supports PDF and DOCX only.")
+
+    extracted = extract_text(filename, data)
+    if not isinstance(extracted, dict):
+        raise ExtractionError("Unexpected DOCX extraction result.")
+
+    raw_text = str(extracted.get("raw_text", "") or "")
+    parsed_from_sections = parse_combined_rmo_text(raw_text) if raw_text else {}
+    section_rows_raw = parsed_from_sections.get("table_rows", []) if isinstance(parsed_from_sections, dict) else []
+    if isinstance(section_rows_raw, list) and section_rows_raw:
+        return {
+            "table_rows": section_rows_raw,
+            "blocks_detected": int(parsed_from_sections.get("blocks_detected", 0) or 0),
+            "warnings": list(parsed_from_sections.get("warnings", []) or []),
+            "debug_blocks": list(parsed_from_sections.get("debug_blocks", []) or []),
+        }
+
+    fallback_rows = extracted.get("table_rows", [])
+    table_rows = fallback_rows if isinstance(fallback_rows, list) else []
+    warnings = list(extracted.get("parse_warnings", []) or [])
+    if not table_rows:
+        warnings.append("No patient table rows parsed from DOCX.")
+    else:
+        warnings.append("Used DOCX table parser fallback; section-level RMO blocks were not detected.")
+
+    return {
+        "table_rows": table_rows,
+        "blocks_detected": 0,
+        "warnings": warnings,
+        "debug_blocks": list(extracted.get("debug_raw_rows", []) or [])[:2],
+    }
 
 
 def _persist_rmo_docs_to_history(
@@ -2649,12 +2688,12 @@ with resources_tab:
             st.write(f"- `{file_path}`")
 
 with case_tab:
-    st.subheader("ICU Tracker (PDF rounds dashboard)")
+    st.subheader("ICU Tracker (rounds dashboard)")
     upload_col, load_col, clear_col = st.columns([2.4, 1, 1])
     with upload_col:
         rmo_pdf_uploads = st.file_uploader(
-            "Upload 1 or 2 rounds PDFs (comparison appears automatically when 2 files are uploaded)",
-            type=["pdf"],
+            "Upload 1 or 2 rounds files (PDF or DOCX; comparison appears when 2 files are uploaded)",
+            type=["pdf", "docx"],
             accept_multiple_files=True,
             key="combined_rmo_pdf_upload",
         )
@@ -2702,7 +2741,7 @@ with case_tab:
     if rmo_pdf_uploads:
         selected_pdf_files = list(rmo_pdf_uploads[:2])
         if len(rmo_pdf_uploads) > 2:
-            st.warning("Only the first 2 PDFs are used for comparison in this version.")
+            st.warning("Only the first 2 files are used for comparison in this version.")
 
         rmo_signature = "|".join(_uploaded_file_fingerprint(upload) for upload in selected_pdf_files)
         if st.session_state.get("rmo_pdf_signature") != rmo_signature:
@@ -2714,9 +2753,9 @@ with case_tab:
                 payload = upload.getvalue()
                 round_date, round_shift = _infer_round_date_shift_from_filename(upload.name)
                 try:
-                    parsed_rmo = parse_combined_rmo_pdf(upload.name, payload)
+                    parsed_rmo = _parse_rounds_document(upload.name, payload)
                 except Exception as error:
-                    st.error(f"Combined RMO PDF parse failed for `{upload.name}`: {error}")
+                    st.error(f"Rounds document parse failed for `{upload.name}`: {error}")
                     continue
 
                 if not isinstance(parsed_rmo, dict):
@@ -2805,7 +2844,7 @@ with case_tab:
             saved_id = int(doc.get("saved_snapshot_id", 0) or 0)
             save_error = str(doc.get("save_error", "")).strip()
             save_meta = f" | Saved snapshot ID: {saved_id}" if saved_id > 0 else ""
-            st.write(f"`{doc_name}` -> Patient packets detected = {blocks} | Beds parsed = {row_count}{save_meta}")
+            st.write(f"`{doc_name}` -> RMO blocks detected = {blocks} | Beds parsed = {row_count}{save_meta}")
             if save_error:
                 st.warning(f"Could not save `{doc_name}` to local history: {save_error}")
             warnings = doc.get("warnings", [])
@@ -2857,7 +2896,7 @@ with case_tab:
         if str(st.session_state.get("rmo_pdf_autobuilt_signature", "")).startswith("snapshot:"):
             st.success("Loaded bed-wise output from your last saved round.")
         elif rmo_pdf_uploads:
-            st.success("Auto-generated bed-wise output from uploaded RMO PDF.")
+            st.success("Auto-generated bed-wise output from uploaded rounds file.")
         _render_all_beds_panel(
             rmo_output_rows,
             key_prefix="rmo_pdf",
