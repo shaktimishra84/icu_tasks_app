@@ -2574,12 +2574,10 @@ advisor: ClinicalTaskAdvisor = st.session_state.advisor
 
 _ensure_startup_index(knowledge_base)
 
-st.sidebar.header("Settings")
 selected_icu_unit = PRIMARY_ICU_UNIT
 if selected_icu_unit != st.session_state.get("active_tracker_unit"):
     _clear_tracker_state()
     st.session_state.active_tracker_unit = selected_icu_unit
-st.sidebar.caption(f"ICU: {selected_icu_unit}")
 
 _render_app_header(selected_icu_unit)
 
@@ -2589,41 +2587,6 @@ if selected_icu_unit not in history_store_cache:
 history_store: ICUHistoryStore = history_store_cache[selected_icu_unit]
 
 model_name = advisor.model
-with st.sidebar.expander("Advanced settings", expanded=False):
-    st.caption(f"Local DB: `{_history_db_path_for_unit(selected_icu_unit).name}`")
-    model_name = st.text_input("LLM model", value=os.getenv("OPENAI_MODEL", advisor.model))
-
-    if advisor.llm_available:
-        st.success("OPENAI_API_KEY detected")
-    else:
-        st.warning("OPENAI_API_KEY missing - fallback mode")
-
-    if st.button("Rebuild startup index", use_container_width=True):
-        with st.spinner("Indexing resources/**/*.pdf ..."):
-            knowledge_base.build_from_resources()
-            st.session_state.index_ready = True
-            st.session_state.startup_index_source = "manual_rebuild"
-        st.success("Index rebuilt from resources/**/*.pdf")
-
-    confirm_reset = st.checkbox(
-        "Confirm clear local round history",
-        value=False,
-        key=f"confirm_clear_{_unit_slug(selected_icu_unit)}",
-    )
-    if st.button("Clear local round history", use_container_width=True, key=f"clear_unit_{_unit_slug(selected_icu_unit)}"):
-        if not confirm_reset:
-            st.warning("Tick confirmation first to clear history.")
-        else:
-            try:
-                history_store.clear_all()
-            except Exception as error:
-                st.error(f"Could not clear history: {error}")
-            else:
-                _clear_tracker_state()
-                _clear_rmo_pdf_state()
-                st.session_state["tracker_context"] = f"Cleared saved history for {selected_icu_unit}."
-                st.success("Local round history cleared.")
-
 if model_name != advisor.model:
     st.session_state.advisor = ClinicalTaskAdvisor(model=model_name)
     advisor = st.session_state.advisor
@@ -2656,6 +2619,26 @@ with resources_tab:
             st.session_state.index_ready = True
             st.session_state.startup_index_source = "manual_rebuild"
         st.success("Index built successfully.")
+    with st.expander("Local round history", expanded=False):
+        st.caption(f"Current ICU: {selected_icu_unit} | DB: `{_history_db_path_for_unit(selected_icu_unit).name}`")
+        confirm_reset = st.checkbox(
+            "Confirm clear local round history",
+            value=False,
+            key=f"confirm_clear_{_unit_slug(selected_icu_unit)}",
+        )
+        if st.button("Clear local round history", use_container_width=True, key=f"clear_unit_{_unit_slug(selected_icu_unit)}"):
+            if not confirm_reset:
+                st.warning("Tick confirmation first to clear history.")
+            else:
+                try:
+                    history_store.clear_all()
+                except Exception as error:
+                    st.error(f"Could not clear history: {error}")
+                else:
+                    _clear_tracker_state()
+                    _clear_rmo_pdf_state()
+                    st.session_state["tracker_context"] = f"Cleared saved history for {selected_icu_unit}."
+                    st.success("Local round history cleared.")
     if knowledge_base.chunk_count() == 0:
         st.info("Index not built yet on this deployment. Click `Build/Rebuild index now` above.")
     indexed_files = knowledge_base.list_files()
