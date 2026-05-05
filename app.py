@@ -2591,7 +2591,7 @@ if model_name != advisor.model:
     st.session_state.advisor = ClinicalTaskAdvisor(model=model_name)
     advisor = st.session_state.advisor
 
-resources_tab, case_tab = st.tabs(["Indexed Resources", "Case Review"])
+case_tab, resources_tab = st.tabs(["Case Review", "Indexed Resources"])
 
 with resources_tab:
     st.subheader("Startup PDF Index")
